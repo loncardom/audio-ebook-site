@@ -8,9 +8,19 @@ function isEpubFile(file: File): boolean {
   return file.name.toLowerCase().endsWith(".epub");
 }
 
-function formatProgress(location: RelocatedLocation | null): string {
+function formatProgress(
+  location: RelocatedLocation | null,
+  totalLocations: number,
+  currentLocationIndex: number | null
+): string {
   if (!location) {
     return "Waiting for first page";
+  }
+
+  const cfi = location.start.cfi;
+  if (cfi && totalLocations > 0) {
+    const page = locationToPageNumber(totalLocations, currentLocationIndex);
+    return `Page ${page} / ${totalLocations}`;
   }
 
   const page = location.start.displayed?.page;
@@ -30,7 +40,27 @@ function formatProgress(location: RelocatedLocation | null): string {
   return "Page loaded";
 }
 
-function pageNumberLabel(location: RelocatedLocation | null): string {
+function locationToPageNumber(
+  totalLocations: number,
+  currentLocationIndex: number | null
+): number {
+  if (totalLocations < 1 || currentLocationIndex === null) {
+    return 1;
+  }
+
+  return Math.min(totalLocations, Math.max(1, currentLocationIndex + 1));
+}
+
+function pageNumberLabel(
+  location: RelocatedLocation | null,
+  totalLocations: number,
+  currentLocationIndex: number | null
+): string {
+  const cfi = location?.start.cfi;
+  if (cfi && totalLocations > 0) {
+    return `${locationToPageNumber(totalLocations, currentLocationIndex)} of ${totalLocations}`;
+  }
+
   const page = location?.start.displayed?.page;
   const total = location?.start.displayed?.total;
 
@@ -38,7 +68,7 @@ function pageNumberLabel(location: RelocatedLocation | null): string {
     return `${page} of ${total}`;
   }
 
-  return formatProgress(location);
+  return formatProgress(location, totalLocations, currentLocationIndex);
 }
 
 function chapterLabel(location: RelocatedLocation | null): string {
@@ -186,6 +216,8 @@ export default function App() {
   const [isTurningPage, setIsTurningPage] = useState(false);
   const [bookTitle, setBookTitle] = useState("No book loaded");
   const [location, setLocation] = useState<RelocatedLocation | null>(null);
+  const [totalLocations, setTotalLocations] = useState(0);
+  const [currentLocationIndex, setCurrentLocationIndex] = useState<number | null>(null);
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [showReaderUi, setShowReaderUi] = useState(true);
 
@@ -302,6 +334,8 @@ export default function App() {
     setStatus("idle");
     setErrorMessage("");
     setLocation(null);
+    setTotalLocations(0);
+    setCurrentLocationIndex(null);
     setBookTitle("No book loaded");
     navigate("/");
   }
@@ -343,12 +377,17 @@ export default function App() {
     setErrorMessage("");
     setBookTitle(file.name.replace(/\.epub$/i, ""));
     setLocation(null);
+    setTotalLocations(0);
+    setCurrentLocationIndex(null);
     setShowReaderUi(true);
 
     try {
       const bookData = await readFileAsArrayBuffer(file);
       const book = ePub();
       await book.open(bookData, "binary");
+      await book.ready;
+      await book.locations.generate(1600);
+
       const rendition = book.renderTo(viewerRef.current, {
         width: "100%",
         height: "100%",
@@ -362,6 +401,14 @@ export default function App() {
 
       const handleRelocated = (nextLocation: RelocatedLocation) => {
         setLocation(nextLocation);
+        const cfi = nextLocation.start.cfi;
+        if (!cfi) {
+          setCurrentLocationIndex(null);
+          return;
+        }
+
+        const nextIndex = book.locations.locationFromCfi(cfi);
+        setCurrentLocationIndex(Number.isFinite(nextIndex) ? nextIndex : null);
       };
 
       const handleReaderKeyUp = (event: KeyboardEvent) => {
@@ -381,6 +428,7 @@ export default function App() {
 
       bookRef.current = book;
       renditionRef.current = rendition;
+      setTotalLocations(book.locations.length());
 
       await rendition.display();
       setStatus("ready");
@@ -445,7 +493,11 @@ export default function App() {
   }
 
   const ready = status === "ready";
-  const pageLabel = pageNumberLabel(location);
+  const pageLabel = pageNumberLabel(
+    location,
+    totalLocations,
+    currentLocationIndex
+  );
   const completion =
     typeof location?.percentage === "number"
       ? Math.max(0, Math.min(100, Math.round(location.percentage * 100)))
@@ -568,7 +620,7 @@ export default function App() {
               <BookIcon />
             </div>
             <div>
-              <p className="brand-name">BiblioPod Style Reader</p>
+              <p className="brand-name">Audiobook epub sync</p>
               <span className="brand-subtitle">Local-first EPUB reader shell</span>
             </div>
           </div>

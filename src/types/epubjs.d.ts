@@ -33,8 +33,16 @@ declare module "epubjs" {
     toc: NavigationItem[];
   }
 
+  export interface Locations {
+    length(): number;
+    generate(chars?: number): Promise<void>;
+    percentageFromCfi(cfi: string): number;
+    locationFromCfi(cfi: string): number;
+  }
+
   export interface Book {
     ready: Promise<void>;
+    locations: Locations;
     open(input: string | ArrayBuffer, what?: string): Promise<object>;
     renderTo(element: Element, options?: RenditionOptions): Rendition;
     destroy(): void;
