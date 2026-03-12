@@ -1,11 +1,78 @@
-import { ChangeEvent, DragEvent, ReactNode, useEffect, useRef, useState } from "react";
+import { ChangeEvent, DragEvent, ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import ePub, { Book, RelocatedLocation, Rendition } from "epubjs";
 
 type ReaderStatus = "idle" | "loading" | "ready" | "error";
 type RoutePath = "/" | "/reader";
 
+type TimelineEntry = {
+  start: number;
+  end: number;
+  word: string;
+  spoken?: string;
+  spine?: number;
+  cfi: string;
+};
+
+type ParsedTimelineRef = {
+  href: string | null;
+  path: string | null;
+  wordIndex: number | null;
+};
+
+function debugLog(step: string, details?: unknown) {
+  if (details === undefined) {
+    console.log(`[reader-sync] ${step}`);
+    return;
+  }
+
+  console.log(`[reader-sync] ${step}`, details);
+}
+
+function buildParentAssetUrl(fileName: string): string | null {
+  if (!import.meta.env.DEV) {
+    return null;
+  }
+
+  const root = __PARENT_ASSET_ROOT__.replace(/\\/g, "/").replace(/\/$/, "");
+  const fsRoot = root.startsWith("/") ? root : `/${root}`;
+  return `/@fs${fsRoot}/${fileName}`;
+}
+
 function isEpubFile(file: File): boolean {
   return file.name.toLowerCase().endsWith(".epub");
+}
+
+function normalizeHref(href?: string | null): string | null {
+  if (!href) {
+    return null;
+  }
+
+  return href.split("#")[0];
+}
+
+function hrefMatches(candidate: string | null, target: string | null): boolean {
+  if (!candidate || !target) {
+    return false;
+  }
+
+  return candidate === target || candidate.endsWith(target) || target.endsWith(candidate);
+}
+
+function extractHrefFromCfi(cfi: string): string | null {
+  const match = cfi.match(/href=([^;]+)/);
+  return normalizeHref(match?.[1] ?? null);
+}
+
+function parseTimelineRef(ref: string): ParsedTimelineRef {
+  const hrefMatch = ref.match(/href=([^;]+)/);
+  const pathMatch = ref.match(/path=([^;]+)/);
+  const wordIndexMatch = ref.match(/w=(\d+)/);
+
+  return {
+    href: normalizeHref(hrefMatch?.[1] ?? null),
+    path: pathMatch?.[1]?.trim() ?? null,
+    wordIndex: wordIndexMatch ? Number(wordIndexMatch[1]) : null
+  };
 }
 
 function formatProgress(
@@ -85,6 +152,62 @@ function chapterLabel(location: RelocatedLocation | null): string {
   }
 
   return "Waiting for chapter";
+}
+
+function formatClock(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) {
+    return "0:00";
+  }
+
+  const rounded = Math.floor(seconds);
+  const mins = Math.floor(rounded / 60);
+  const secs = rounded % 60;
+  return `${mins}:${secs.toString().padStart(2, "0")}`;
+}
+
+function findTimelineIndexAtTime(
+  entries: TimelineEntry[],
+  currentTime: number,
+  lastIndex: number | null
+): number | null {
+  if (!entries.length) {
+    return null;
+  }
+
+  if (
+    lastIndex !== null &&
+    entries[lastIndex] &&
+    currentTime >= entries[lastIndex].start &&
+    currentTime <= entries[lastIndex].end
+  ) {
+    return lastIndex;
+  }
+
+  if (currentTime < entries[0].start || currentTime > entries[entries.length - 1].end) {
+    return null;
+  }
+
+  let low = 0;
+  let high = entries.length - 1;
+
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    const entry = entries[mid];
+
+    if (currentTime < entry.start) {
+      high = mid - 1;
+      continue;
+    }
+
+    if (currentTime > entry.end) {
+      low = mid + 1;
+      continue;
+    }
+
+    return mid;
+  }
+
+  return null;
 }
 
 function IconButton(props: {
@@ -198,20 +321,43 @@ function BookIcon() {
   );
 }
 
+function PlayIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M8 6.5v11l9-5.5-9-5.5Z" />
+    </svg>
+  );
+}
+
+function PauseIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M8.5 6.5v11M15.5 6.5v11" />
+    </svg>
+  );
+}
+
 export default function App() {
   const viewerRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   const bookRef = useRef<Book | null>(null);
   const renditionRef = useRef<Rendition | null>(null);
-  const objectUrlRef = useRef<string | null>(null);
   const statusRef = useRef<ReaderStatus>("idle");
   const isTurningPageRef = useRef(false);
+  const autoBootAttemptedRef = useRef(false);
+  const appActiveRef = useRef(true);
+  const activeHighlightCfiRef = useRef<string | null>(null);
+  const activeHighlightElementRef = useRef<HTMLElement | null>(null);
+  const followedHrefRef = useRef<string | null>(null);
+  const activeWordIndexRef = useRef<number | null>(null);
 
   const [routePath, setRoutePath] = useState<RoutePath>(
     window.location.pathname === "/reader" ? "/reader" : "/"
   );
   const [status, setStatus] = useState<ReaderStatus>("idle");
   const [errorMessage, setErrorMessage] = useState("");
+  const [landingNotice, setLandingNotice] = useState("");
   const [isDragging, setIsDragging] = useState(false);
   const [isTurningPage, setIsTurningPage] = useState(false);
   const [bookTitle, setBookTitle] = useState("No book loaded");
@@ -220,6 +366,19 @@ export default function App() {
   const [currentLocationIndex, setCurrentLocationIndex] = useState<number | null>(null);
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [showReaderUi, setShowReaderUi] = useState(true);
+  const [viewerMounted, setViewerMounted] = useState(false);
+  const [audioSrc, setAudioSrc] = useState<string | null>(null);
+  const [timelineEntries, setTimelineEntries] = useState<TimelineEntry[]>([]);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [activeWordIndex, setActiveWordIndex] = useState<number | null>(null);
+
+  const handleViewerRef = useCallback((node: HTMLDivElement | null) => {
+    viewerRef.current = node;
+    setViewerMounted(Boolean(node));
+    debugLog("viewerRef:update", { mounted: Boolean(node) });
+  }, []);
 
   async function readFileAsArrayBuffer(file: File): Promise<ArrayBuffer> {
     return new Promise((resolve, reject) => {
@@ -241,6 +400,172 @@ export default function App() {
     });
   }
 
+  async function fetchArrayBuffer(url: string): Promise<ArrayBuffer> {
+    debugLog("fetchArrayBuffer:start", { url });
+    const response = await fetch(url);
+    debugLog("fetchArrayBuffer:response", { url, ok: response.ok, status: response.status });
+    if (!response.ok) {
+      throw new Error(`Failed to load ${url}`);
+    }
+
+    const data = await response.arrayBuffer();
+    debugLog("fetchArrayBuffer:done", { url, bytes: data.byteLength });
+    return data;
+  }
+
+  async function fetchTimeline(url: string): Promise<TimelineEntry[]> {
+    debugLog("fetchTimeline:start", { url });
+    const response = await fetch(url);
+    debugLog("fetchTimeline:response", { url, ok: response.ok, status: response.status });
+    if (!response.ok) {
+      throw new Error(`Failed to load ${url}`);
+    }
+
+    const payload = (await response.json()) as TimelineEntry[];
+    const filtered = payload.filter((entry) => typeof entry.cfi === "string" && entry.cfi.length > 0);
+    debugLog("fetchTimeline:done", { url, total: payload.length, usable: filtered.length });
+    return filtered;
+  }
+
+  function clearActiveHighlight() {
+    const highlighted = activeHighlightElementRef.current;
+    if (highlighted?.parentNode) {
+      const parent = highlighted.parentNode;
+      while (highlighted.firstChild) {
+        parent.insertBefore(highlighted.firstChild, highlighted);
+      }
+      parent.removeChild(highlighted);
+      parent.normalize();
+    }
+
+    activeHighlightElementRef.current = null;
+    activeHighlightCfiRef.current = null;
+  }
+
+  function applyDomHighlight(ref: string): boolean {
+    const parsed = parseTimelineRef(ref);
+    if (!parsed.href || !parsed.path || parsed.wordIndex === null || !renditionRef.current) {
+      debugLog("highlight:invalid-ref", { ref, parsed });
+      return false;
+    }
+
+    const contentsList = (
+      renditionRef.current as Rendition & {
+        getContents?: () => Array<{
+          document?: Document;
+        }>;
+      }
+    ).getContents?.() ?? [];
+
+    debugLog("highlight:contents", {
+      ref,
+      parsed,
+      contents: contentsList.map((contents) => ({
+        canonical:
+          contents.document?.querySelector("link[rel='canonical']")?.getAttribute("href") ??
+          null,
+        pathname: contents.document?.location?.pathname ?? null
+      }))
+    });
+
+    const matchingContents = contentsList.find((contents) => {
+      const currentHref = normalizeHref(
+        contents.document?.querySelector("link[rel='canonical']")?.getAttribute("href") ??
+          contents.document?.location?.pathname ??
+          null
+      );
+      return hrefMatches(currentHref, parsed.href);
+    });
+
+    const doc = matchingContents?.document;
+    if (!doc) {
+      debugLog("highlight:no-matching-contents", { ref, parsed });
+      return false;
+    }
+
+    let targetElement: Element | null = null;
+    try {
+      targetElement = doc.querySelector(parsed.path);
+    } catch {
+      debugLog("highlight:bad-selector", { ref, path: parsed.path });
+      return false;
+    }
+
+    if (!targetElement) {
+      debugLog("highlight:no-target-element", { ref, path: parsed.path });
+      return false;
+    }
+
+    const walker = doc.createTreeWalker(targetElement, NodeFilter.SHOW_TEXT);
+    const wordPattern = /\S+/g;
+    let seenWords = 0;
+
+    while (walker.nextNode()) {
+      const textNode = walker.currentNode as Text;
+      const text = textNode.textContent ?? "";
+      wordPattern.lastIndex = 0;
+      let match: RegExpExecArray | null;
+
+      while ((match = wordPattern.exec(text)) !== null) {
+        if (seenWords === parsed.wordIndex) {
+          const range = doc.createRange();
+          range.setStart(textNode, match.index);
+          range.setEnd(textNode, match.index + match[0].length);
+
+          const wrapper = doc.createElement("span");
+          wrapper.className = "sync-word-highlight-dom";
+
+          try {
+            range.surroundContents(wrapper);
+          } catch {
+            debugLog("highlight:surround-failed", {
+              ref,
+              word: match[0],
+              path: parsed.path,
+              wordIndex: parsed.wordIndex
+            });
+            return false;
+          }
+
+          activeHighlightElementRef.current = wrapper;
+          activeHighlightCfiRef.current = ref;
+          debugLog("highlight:applied", {
+            ref,
+            word: match[0],
+            path: parsed.path,
+            wordIndex: parsed.wordIndex
+          });
+          return true;
+        }
+
+        seenWords += 1;
+      }
+    }
+
+    debugLog("highlight:word-index-miss", {
+      ref,
+      path: parsed.path,
+      requestedWordIndex: parsed.wordIndex,
+      wordsSeen: seenWords
+    });
+    return false;
+  }
+
+  function syncActiveWord(time: number) {
+    const nextIndex = findTimelineIndexAtTime(
+      timelineEntries,
+      time,
+      activeWordIndexRef.current
+    );
+
+    if (nextIndex === activeWordIndexRef.current) {
+      return;
+    }
+
+    activeWordIndexRef.current = nextIndex;
+    setActiveWordIndex(nextIndex);
+  }
+
   useEffect(() => {
     statusRef.current = status;
   }, [status]);
@@ -250,6 +575,8 @@ export default function App() {
   }, [isTurningPage]);
 
   useEffect(() => {
+    appActiveRef.current = true;
+
     const handlePopState = () => {
       setRoutePath(window.location.pathname === "/reader" ? "/reader" : "/");
     };
@@ -257,20 +584,84 @@ export default function App() {
     window.addEventListener("popstate", handlePopState);
 
     return () => {
+      appActiveRef.current = false;
       window.removeEventListener("popstate", handlePopState);
+      if (audioRef.current) {
+        audioRef.current.pause();
+      }
       cleanupReader();
     };
   }, []);
 
   useEffect(() => {
-    if (routePath !== "/reader" || !pendingFile || !viewerRef.current) {
+    if (autoBootAttemptedRef.current || !import.meta.env.DEV) {
+      return;
+    }
+
+    const epubUrl = buildParentAssetUrl("book.epub");
+    const audioUrl = buildParentAssetUrl("asr_0_300s.mp3");
+    const timelineUrl = buildParentAssetUrl("book_timeline.json");
+
+    if (!epubUrl || !audioUrl || !timelineUrl) {
+      return;
+    }
+
+    autoBootAttemptedRef.current = true;
+
+    debugLog("autoboot:start", { epubUrl, audioUrl, timelineUrl });
+    setLandingNotice("");
+    setStatus("loading");
+    setBookTitle("book");
+    setShowReaderUi(true);
+    navigate("/reader");
+
+    void Promise.all([
+      fetchArrayBuffer(epubUrl),
+      fetchTimeline(timelineUrl)
+    ])
+      .then(([bookData, timeline]) => {
+        if (!appActiveRef.current) {
+          debugLog("autoboot:ignored-inactive");
+          return;
+        }
+
+        debugLog("autoboot:assets-ready", {
+          bookBytes: bookData.byteLength,
+          timelineEntries: timeline.length,
+          audioUrl
+        });
+        setTimelineEntries(timeline);
+        setAudioSrc(audioUrl);
+        if (!viewerRef.current) {
+          debugLog("autoboot:no-viewer");
+          throw new Error("Reader viewport was not mounted.");
+        }
+        void loadBookFromBinary(bookData, "book.epub");
+      })
+      .catch((error) => {
+        if (!appActiveRef.current) {
+          debugLog("autoboot:error-ignored-inactive", error);
+          return;
+        }
+
+        debugLog("autoboot:failed", error);
+        setStatus("idle");
+        setLandingNotice(
+          "Automatic sample loading was unavailable. You can still upload an EPUB manually."
+        );
+        navigate("/");
+      });
+  }, []);
+
+  useEffect(() => {
+    if (routePath !== "/reader" || !pendingFile || !viewerMounted) {
       return;
     }
 
     const nextFile = pendingFile;
     setPendingFile(null);
-    void loadBook(nextFile);
-  }, [routePath, pendingFile]);
+    void loadBookFromFile(nextFile);
+  }, [routePath, pendingFile, viewerMounted]);
 
   useEffect(() => {
     if (routePath !== "/reader" || status !== "ready") {
@@ -293,33 +684,73 @@ export default function App() {
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [routePath, status, isTurningPage]);
+  }, [routePath, status]);
 
   useEffect(() => {
     if (routePath !== "/reader") {
       return;
     }
 
-    const hideUi = () => setShowReaderUi(false);
-    const showUi = () => setShowReaderUi(true);
-    const timeoutId = window.setTimeout(hideUi, 2200);
+    let timeoutId = window.setTimeout(() => setShowReaderUi(false), 2200);
 
-    const resetTimer = () => {
+    const showUi = () => {
       window.clearTimeout(timeoutId);
-      showUi();
+      setShowReaderUi(true);
+      timeoutId = window.setTimeout(() => setShowReaderUi(false), 2200);
     };
 
-    window.addEventListener("mousemove", resetTimer);
+    window.addEventListener("mousemove", showUi);
     window.addEventListener("pointerdown", showUi);
     window.addEventListener("keydown", showUi);
 
     return () => {
       window.clearTimeout(timeoutId);
-      window.removeEventListener("mousemove", resetTimer);
+      window.removeEventListener("mousemove", showUi);
       window.removeEventListener("pointerdown", showUi);
       window.removeEventListener("keydown", showUi);
     };
   }, [routePath, location, status]);
+
+  useEffect(() => {
+    if (status !== "ready" || !renditionRef.current) {
+      clearActiveHighlight();
+      return;
+    }
+
+    clearActiveHighlight();
+
+    if (activeWordIndex === null) {
+      return;
+    }
+
+    const activeEntry = timelineEntries[activeWordIndex];
+    if (!activeEntry?.cfi) {
+      return;
+    }
+
+    const parsedRef = parseTimelineRef(activeEntry.cfi);
+    const activeHref = parsedRef.href ?? extractHrefFromCfi(activeEntry.cfi);
+    const visibleHref = normalizeHref(location?.start.href);
+    if (
+      activeHref &&
+      !hrefMatches(visibleHref, activeHref) &&
+      !hrefMatches(followedHrefRef.current, activeHref) &&
+      renditionRef.current
+    ) {
+      followedHrefRef.current = activeHref;
+      debugLog("highlight:navigate-to-href", { activeHref, visibleHref });
+      void renditionRef.current.display(activeHref).catch(() => undefined);
+    } else if (activeHref && hrefMatches(activeHref, visibleHref)) {
+      followedHrefRef.current = activeHref;
+      void Promise.resolve().then(() => {
+        if (activeWordIndexRef.current !== activeWordIndex) {
+          return;
+        }
+
+        applyDomHighlight(activeEntry.cfi);
+      });
+    }
+  }, [activeWordIndex, location?.start.href, status, timelineEntries]);
 
   function navigate(path: RoutePath) {
     if (window.location.pathname !== path) {
@@ -328,8 +759,24 @@ export default function App() {
     setRoutePath(path);
   }
 
+  function resetPlayback() {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
+    }
+
+    setIsPlaying(false);
+    setCurrentTime(0);
+    setDuration(0);
+    setActiveWordIndex(null);
+    activeWordIndexRef.current = null;
+    clearActiveHighlight();
+    followedHrefRef.current = null;
+  }
+
   function closeReader() {
     cleanupReader();
+    resetPlayback();
     setPendingFile(null);
     setStatus("idle");
     setErrorMessage("");
@@ -341,6 +788,8 @@ export default function App() {
   }
 
   function cleanupReader() {
+    clearActiveHighlight();
+
     if (renditionRef.current) {
       renditionRef.current.destroy();
       renditionRef.current = null;
@@ -350,20 +799,9 @@ export default function App() {
       bookRef.current.destroy();
       bookRef.current = null;
     }
-
-    if (objectUrlRef.current) {
-      URL.revokeObjectURL(objectUrlRef.current);
-      objectUrlRef.current = null;
-    }
   }
 
-  async function loadBook(file: File) {
-    if (!isEpubFile(file)) {
-      setStatus("error");
-      setErrorMessage("Please upload a valid .epub file.");
-      return;
-    }
-
+  async function loadBookFromBinary(bookData: ArrayBuffer, title: string) {
     if (!viewerRef.current) {
       setStatus("error");
       setErrorMessage("Reader viewport is unavailable.");
@@ -375,18 +813,21 @@ export default function App() {
 
     setStatus("loading");
     setErrorMessage("");
-    setBookTitle(file.name.replace(/\.epub$/i, ""));
+    setBookTitle(title.replace(/\.epub$/i, ""));
     setLocation(null);
     setTotalLocations(0);
     setCurrentLocationIndex(null);
     setShowReaderUi(true);
+    followedHrefRef.current = null;
 
     try {
-      const bookData = await readFileAsArrayBuffer(file);
+      debugLog("loadBook:start", { title, bytes: bookData.byteLength });
       const book = ePub();
+      debugLog("loadBook:book-created");
       await book.open(bookData, "binary");
+      debugLog("loadBook:book-opened");
       await book.ready;
-      await book.locations.generate(1600);
+      debugLog("loadBook:book-ready");
 
       const rendition = book.renderTo(viewerRef.current, {
         width: "100%",
@@ -395,11 +836,29 @@ export default function App() {
         flow: "paginated",
         manager: "default"
       });
-      (rendition as Rendition & {
-        themes?: { fontSize: (size: string) => void };
-      }).themes?.fontSize("112%");
+      debugLog("loadBook:rendition-created");
+
+      rendition.themes.fontSize("112%");
+      rendition.themes.default({
+        body: {
+          "font-size": "1.12em",
+          "line-height": "1.6",
+          color: "#221b16"
+        },
+        ".sync-word-highlight-dom": {
+          "background-color": "rgba(255, 159, 67, 0.30)",
+          color: "#1a120c",
+          "border-radius": "0.22em",
+          "box-shadow": "0 0 0 0.12em rgba(255, 159, 67, 0.18)"
+        }
+      });
 
       const handleRelocated = (nextLocation: RelocatedLocation) => {
+        debugLog("rendition:relocated", {
+          href: nextLocation.start.href,
+          cfi: nextLocation.start.cfi,
+          percentage: nextLocation.percentage
+        });
         setLocation(nextLocation);
         const cfi = nextLocation.start.cfi;
         if (!cfi) {
@@ -428,17 +887,62 @@ export default function App() {
 
       bookRef.current = book;
       renditionRef.current = rendition;
-      setTotalLocations(book.locations.length());
 
+      debugLog("loadBook:display-start");
       await rendition.display();
+      debugLog("loadBook:display-done");
       setStatus("ready");
+      debugLog("loadBook:status-ready");
+
+      void book.locations
+        .generate(1600)
+        .then(() => {
+          if (bookRef.current !== book) {
+            return;
+          }
+
+          debugLog("loadBook:locations-generated", { total: book.locations.length() });
+          setTotalLocations(book.locations.length());
+
+          const currentCfi = renditionRef.current ? location?.start.cfi : null;
+          if (!currentCfi) {
+            return;
+          }
+
+          const nextIndex = book.locations.locationFromCfi(currentCfi);
+          setCurrentLocationIndex(Number.isFinite(nextIndex) ? nextIndex : null);
+        })
+        .catch(() => {
+          if (bookRef.current !== book) {
+            return;
+          }
+
+          debugLog("loadBook:locations-generate-failed");
+          setTotalLocations(0);
+        });
     } catch (error) {
+      debugLog("loadBook:failed", error);
       cleanupReader();
       setStatus("error");
       setErrorMessage(
         error instanceof Error ? error.message : "The EPUB could not be opened."
       );
     }
+  }
+
+  async function loadBookFromFile(file: File) {
+    if (!isEpubFile(file)) {
+      setStatus("error");
+      setErrorMessage("Please upload a valid .epub file.");
+      return;
+    }
+
+    setAudioSrc(null);
+    setTimelineEntries([]);
+    resetPlayback();
+
+    const bookData = await readFileAsArrayBuffer(file);
+    await loadBookFromBinary(bookData, file.name);
   }
 
   async function turnPage(direction: "prev" | "next") {
@@ -465,11 +969,40 @@ export default function App() {
     }
   }
 
+  async function togglePlayback() {
+    if (!audioRef.current || !audioSrc) {
+      debugLog("playback:toggle-ignored", { hasAudio: Boolean(audioRef.current), audioSrc });
+      return;
+    }
+
+    setShowReaderUi(true);
+
+    if (audioRef.current.paused) {
+      debugLog("playback:play-request");
+      await audioRef.current.play();
+    } else {
+      debugLog("playback:pause-request");
+      audioRef.current.pause();
+    }
+  }
+
+  function handleScrub(nextValue: number) {
+    if (!audioRef.current || !Number.isFinite(nextValue)) {
+      return;
+    }
+
+    audioRef.current.currentTime = nextValue;
+    setCurrentTime(nextValue);
+    syncActiveWord(nextValue);
+  }
+
   function handleInputChange(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     if (!file) {
       return;
     }
+
+    setLandingNotice("");
     setPendingFile(file);
     navigate("/reader");
     event.target.value = "";
@@ -484,6 +1017,7 @@ export default function App() {
       return;
     }
 
+    setLandingNotice("");
     setPendingFile(file);
     navigate("/reader");
   }
@@ -493,15 +1027,13 @@ export default function App() {
   }
 
   const ready = status === "ready";
-  const pageLabel = pageNumberLabel(
-    location,
-    totalLocations,
-    currentLocationIndex
-  );
+  const pageLabel = pageNumberLabel(location, totalLocations, currentLocationIndex);
   const completion =
-    typeof location?.percentage === "number"
-      ? Math.max(0, Math.min(100, Math.round(location.percentage * 100)))
-      : 0;
+    totalLocations > 0 && currentLocationIndex !== null
+      ? Math.round((currentLocationIndex / totalLocations) * 100)
+      : typeof location?.percentage === "number"
+        ? Math.max(0, Math.min(100, Math.round(location.percentage * 100)))
+        : 0;
 
   if (routePath === "/reader") {
     return (
@@ -510,6 +1042,58 @@ export default function App() {
         onPointerMove={() => setShowReaderUi(true)}
         onClick={() => setShowReaderUi(true)}
       >
+        <audio
+          ref={audioRef}
+          src={audioSrc ?? undefined}
+          preload={audioSrc ? "metadata" : "none"}
+          onLoadedMetadata={(event) => {
+            debugLog("audio:loaded-metadata", {
+              duration: event.currentTarget.duration,
+              src: event.currentTarget.currentSrc
+            });
+            setDuration(event.currentTarget.duration || 0);
+            setCurrentTime(event.currentTarget.currentTime || 0);
+            syncActiveWord(event.currentTarget.currentTime || 0);
+          }}
+          onTimeUpdate={(event) => {
+            const nextTime = event.currentTarget.currentTime;
+            setCurrentTime(nextTime);
+            syncActiveWord(nextTime);
+          }}
+          onPlay={() => setIsPlaying(true)}
+          onPause={() => setIsPlaying(false)}
+          onPlayCapture={() => debugLog("audio:play")}
+          onPauseCapture={() => debugLog("audio:pause")}
+          onSeeking={(event) => {
+            debugLog("audio:seeking", { time: event.currentTarget.currentTime });
+            const nextTime = event.currentTarget.currentTime;
+            setCurrentTime(nextTime);
+            syncActiveWord(nextTime);
+          }}
+          onSeeked={(event) => {
+            debugLog("audio:seeked", { time: event.currentTarget.currentTime });
+            const nextTime = event.currentTarget.currentTime;
+            setCurrentTime(nextTime);
+            syncActiveWord(nextTime);
+          }}
+          onEnded={() => {
+            debugLog("audio:ended");
+            setIsPlaying(false);
+            setCurrentTime(duration);
+            setActiveWordIndex(null);
+            activeWordIndexRef.current = null;
+            clearActiveHighlight();
+          }}
+          onError={(event) => {
+            const element = event.currentTarget;
+            debugLog("audio:error", {
+              code: element.error?.code,
+              message: element.error?.message,
+              src: element.currentSrc
+            });
+          }}
+        />
+
         <div className="reader-backdrop" />
 
         <div className="reader-frame">
@@ -564,14 +1148,14 @@ export default function App() {
                   <span>
                     {status === "error"
                       ? "Load another file from the library screen."
-                      : "Parsing chapters and preparing paginated pages."}
+                      : "Loading the default book and preparing sync data."}
                   </span>
                 </div>
               </div>
             ) : null}
 
             <div
-              ref={viewerRef}
+              ref={handleViewerRef}
               className={`fullscreen-viewport ${ready ? "visible" : ""}`}
             />
 
@@ -597,9 +1181,44 @@ export default function App() {
           </div>
 
           <div className={`reader-progress ${showReaderUi ? "visible" : ""}`}>
-            <div className="reader-progress-chip">
-              <span>{pageLabel}</span>
+            <div className="reader-bottom-bar">
+              <div className="reader-progress-chip">
+                <span>{pageLabel}</span>
+              </div>
+
+              {audioSrc ? (
+                <div className="player-chip">
+                  <button
+                    type="button"
+                    className="player-button"
+                    aria-label={isPlaying ? "Pause audio" : "Play audio"}
+                    onClick={() => void togglePlayback()}
+                    disabled={!ready}
+                  >
+                    {isPlaying ? <PauseIcon /> : <PlayIcon />}
+                  </button>
+                  <span className="player-label">
+                    {isPlaying ? "Playing audio sync" : "Play audio sync"}
+                  </span>
+                  <span className="player-time">
+                    {formatClock(currentTime)} / {formatClock(duration)}
+                  </span>
+                  <input
+                    className="player-scrubber"
+                    type="range"
+                    min={0}
+                    max={duration || 0}
+                    step={0.1}
+                    value={Math.min(currentTime, duration || 0)}
+                    onChange={(event) => handleScrub(Number(event.currentTarget.value))}
+                    onInput={(event) => handleScrub(Number(event.currentTarget.value))}
+                    disabled={!ready || !duration}
+                    aria-label="Scrub audio position"
+                  />
+                </div>
+              ) : null}
             </div>
+
             <div className="reader-progress-meter" aria-hidden="true">
               <span style={{ width: `${completion}%` }} />
             </div>
@@ -620,7 +1239,7 @@ export default function App() {
               <BookIcon />
             </div>
             <div>
-              <p className="brand-name">Audiobook epub sync</p>
+              <p className="brand-name">BiblioPod Style Reader</p>
               <span className="brand-subtitle">Local-first EPUB reader shell</span>
             </div>
           </div>
@@ -646,12 +1265,12 @@ export default function App() {
                 <span>epub.js flow with keyboard navigation</span>
               </div>
               <div className="stat-card">
-                <strong>Local upload</strong>
-                <span>binary file loading with no remote storage</span>
+                <strong>Auto sample load</strong>
+                <span>dev mode can boot the parent `book.epub` automatically</span>
               </div>
               <div className="stat-card">
-                <strong>Reader chrome</strong>
-                <span>top controls, side paddles, bottom progress</span>
+                <strong>Audio sync</strong>
+                <span>play the first chunk and highlight spoken words</span>
               </div>
             </div>
           </div>
@@ -682,6 +1301,9 @@ export default function App() {
               The file stays on this machine. Open it directly into the redesigned
               reader interface.
             </p>
+
+            {landingNotice ? <p className="landing-notice">{landingNotice}</p> : null}
+
             <button
               type="button"
               className="primary-action"

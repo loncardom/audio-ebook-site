@@ -40,6 +40,22 @@ declare module "epubjs" {
     locationFromCfi(cfi: string): number;
   }
 
+  export interface Themes {
+    default(theme: object | string): void;
+    fontSize(size: string): void;
+  }
+
+  export interface Annotations {
+    highlight(
+      cfiRange: string,
+      data?: object,
+      cb?: ((event: Event) => void) | undefined,
+      className?: string,
+      styles?: Record<string, string>
+    ): unknown;
+    remove(cfiRange: string, type: "highlight" | "underline" | "mark"): void;
+  }
+
   export interface Book {
     ready: Promise<void>;
     locations: Locations;
@@ -49,6 +65,8 @@ declare module "epubjs" {
   }
 
   export interface Rendition {
+    annotations: Annotations;
+    themes: Themes;
     display(target?: string): Promise<void>;
     prev(): Promise<void>;
     next(): Promise<void>;
