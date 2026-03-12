@@ -356,6 +356,9 @@ export default function App() {
         flow: "paginated",
         manager: "default"
       });
+      (rendition as Rendition & {
+        themes?: { fontSize: (size: string) => void };
+      }).themes?.fontSize("112%");
 
       const handleRelocated = (nextLocation: RelocatedLocation) => {
         setLocation(nextLocation);
