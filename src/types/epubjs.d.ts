@@ -18,6 +18,7 @@ declare module "epubjs" {
     width?: string | number;
     height?: string | number;
     spread?: "auto" | "none" | "both";
+    minSpreadWidth?: number;
     flow?: "paginated" | "scrolled-doc" | "scrolled-continuous";
     manager?: string;
     allowScriptedContent?: boolean;
@@ -68,11 +69,14 @@ declare module "epubjs" {
     annotations: Annotations;
     themes: Themes;
     display(target?: string): Promise<void>;
+    resize(width?: number, height?: number, epubcfi?: string): void;
     prev(): Promise<void>;
     next(): Promise<void>;
     destroy(): void;
+    on(event: "rendered", listener: (...args: unknown[]) => void): void;
     on(event: "relocated", listener: (location: RelocatedLocation) => void): void;
     on(event: "keyup", listener: (event: KeyboardEvent) => void): void;
+    off(event: "rendered", listener: (...args: unknown[]) => void): void;
     off(event: "relocated", listener: (location: RelocatedLocation) => void): void;
     off(event: "keyup", listener: (event: KeyboardEvent) => void): void;
   }

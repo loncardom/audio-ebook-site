@@ -820,7 +820,7 @@ svg {
   }
 }
 
-@media (max-width: 580px) {
+@media (max-width: 800px) {
   .reader-divider {
     display: none;
   }
