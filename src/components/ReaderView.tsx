@@ -182,6 +182,7 @@ export function ReaderView(props: ReaderViewProps) {
             className="nav-button nav-button-prev"
             aria-label="Previous page"
             disabled={!ready || isTurningPage}
+            onPointerEnter={() => setShowReaderUi(true)}
             onClick={() => void turnPage("prev")}
           >
             <span className="nav-arrow">‹</span>
@@ -192,6 +193,7 @@ export function ReaderView(props: ReaderViewProps) {
             className="nav-button nav-button-next"
             aria-label="Next page"
             disabled={!ready || isTurningPage}
+            onPointerEnter={() => setShowReaderUi(true)}
             onClick={() => void turnPage("next")}
           >
             <span className="nav-arrow">›</span>
