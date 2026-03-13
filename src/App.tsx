@@ -19,6 +19,11 @@ type ParsedTimelineRef = {
   wordIndex: number | null;
 };
 
+type ClickTextPosition = {
+  node: Text;
+  offset: number;
+};
+
 function debugLog(step: string, details?: unknown) {
   if (details === undefined) {
     console.log(`[reader-sync] ${step}`);
@@ -47,7 +52,7 @@ function normalizeHref(href?: string | null): string | null {
     return null;
   }
 
-  return href.split("#")[0];
+  return href.split("#")[0].replace(/^\/+/, "");
 }
 
 function hrefMatches(candidate: string | null, target: string | null): boolean {
@@ -73,6 +78,116 @@ function parseTimelineRef(ref: string): ParsedTimelineRef {
     path: pathMatch?.[1]?.trim() ?? null,
     wordIndex: wordIndexMatch ? Number(wordIndexMatch[1]) : null
   };
+}
+
+function timelineLookupKey(
+  href: string | null,
+  path: string | null,
+  wordIndex: number | null
+): string {
+  return `${href ?? ""}|${path ?? ""}|${wordIndex ?? ""}`;
+}
+
+function buildElementPath(element: Element, doc: Document): string {
+  const parts: string[] = [];
+  let current: Element | null = element;
+
+  while (current) {
+    if (current === doc.documentElement) {
+      parts.unshift("html");
+      break;
+    }
+
+    if (current === doc.body) {
+      parts.unshift("body");
+      current = current.parentElement;
+      continue;
+    }
+
+    const tagName = current.tagName.toLowerCase();
+    const parent = current.parentElement;
+    if (!parent) {
+      break;
+    }
+
+    const siblings = Array.from(parent.children).filter(
+      (child) => child.tagName.toLowerCase() === tagName
+    );
+    const index = siblings.indexOf(current) + 1;
+    parts.unshift(`${tagName}:nth-of-type(${index})`);
+    current = parent;
+  }
+
+  return parts.join(" > ");
+}
+
+function resolveClickTextPosition(event: MouseEvent, doc: Document): ClickTextPosition | null {
+  const anyDoc = doc as Document & {
+    caretPositionFromPoint?: (
+      x: number,
+      y: number
+    ) => { offsetNode: Node | null; offset: number } | null;
+    caretRangeFromPoint?: (x: number, y: number) => Range | null;
+  };
+
+  if (typeof anyDoc.caretPositionFromPoint === "function") {
+    const position = anyDoc.caretPositionFromPoint(event.clientX, event.clientY);
+    if (position?.offsetNode?.nodeType === Node.TEXT_NODE) {
+      return {
+        node: position.offsetNode as Text,
+        offset: position.offset
+      };
+    }
+  }
+
+  if (typeof anyDoc.caretRangeFromPoint === "function") {
+    const range = anyDoc.caretRangeFromPoint(event.clientX, event.clientY);
+    if (range?.startContainer?.nodeType === Node.TEXT_NODE) {
+      return {
+        node: range.startContainer as Text,
+        offset: range.startOffset
+      };
+    }
+  }
+
+  return null;
+}
+
+function wordIndexWithinElement(root: Element, targetNode: Text, offset: number): number | null {
+  const walker = root.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const wordPattern = /\S+/g;
+  let seenWords = 0;
+  let lastSeenInTarget: number | null = null;
+
+  while (walker.nextNode()) {
+    const textNode = walker.currentNode as Text;
+    const text = textNode.textContent ?? "";
+    wordPattern.lastIndex = 0;
+    let match: RegExpExecArray | null;
+
+    while ((match = wordPattern.exec(text)) !== null) {
+      const wordStart = match.index;
+      const wordEnd = match.index + match[0].length;
+
+      if (textNode === targetNode) {
+        if (offset >= wordStart && offset <= wordEnd) {
+          return seenWords;
+        }
+
+        if (offset > wordEnd) {
+          lastSeenInTarget = seenWords;
+        }
+      }
+
+      seenWords += 1;
+    }
+
+    if (textNode === targetNode) {
+      return lastSeenInTarget;
+    }
+  }
+
+  return null;
 }
 
 function formatProgress(
@@ -351,6 +466,9 @@ export default function App() {
   const activeHighlightElementRef = useRef<HTMLElement | null>(null);
   const followedHrefRef = useRef<string | null>(null);
   const activeWordIndexRef = useRef<number | null>(null);
+  const timelineLookupRef = useRef<Map<string, TimelineEntry>>(new Map());
+  const timelinePathGroupsRef = useRef<Map<string, TimelineEntry[]>>(new Map());
+  const timelineHrefGroupsRef = useRef<Map<string, TimelineEntry[]>>(new Map());
 
   const [routePath, setRoutePath] = useState<RoutePath>(
     window.location.pathname === "/reader" ? "/reader" : "/"
@@ -565,6 +683,45 @@ export default function App() {
     activeWordIndexRef.current = nextIndex;
     setActiveWordIndex(nextIndex);
   }
+
+  useEffect(() => {
+    const nextLookup = new Map<string, TimelineEntry>();
+    const nextPathGroups = new Map<string, TimelineEntry[]>();
+    const nextHrefGroups = new Map<string, TimelineEntry[]>();
+
+    for (const entry of timelineEntries) {
+      const parsed = parseTimelineRef(entry.cfi);
+      const lookupKey = timelineLookupKey(parsed.href, parsed.path, parsed.wordIndex);
+      nextLookup.set(lookupKey, entry);
+
+      const pathKey = timelineLookupKey(parsed.href, parsed.path, null);
+      const pathEntries = nextPathGroups.get(pathKey) ?? [];
+      pathEntries.push(entry);
+      nextPathGroups.set(pathKey, pathEntries);
+
+      if (parsed.href) {
+        const hrefEntries = nextHrefGroups.get(parsed.href) ?? [];
+        hrefEntries.push(entry);
+        nextHrefGroups.set(parsed.href, hrefEntries);
+      }
+    }
+
+    for (const entries of nextPathGroups.values()) {
+      entries.sort((a, b) => {
+        const parsedA = parseTimelineRef(a.cfi);
+        const parsedB = parseTimelineRef(b.cfi);
+        return (parsedA.wordIndex ?? 0) - (parsedB.wordIndex ?? 0);
+      });
+    }
+
+    for (const entries of nextHrefGroups.values()) {
+      entries.sort((a, b) => a.start - b.start);
+    }
+
+    timelineLookupRef.current = nextLookup;
+    timelinePathGroupsRef.current = nextPathGroups;
+    timelineHrefGroupsRef.current = nextHrefGroups;
+  }, [timelineEntries]);
 
   useEffect(() => {
     statusRef.current = status;
@@ -995,6 +1152,186 @@ export default function App() {
     setCurrentTime(nextValue);
     syncActiveWord(nextValue);
   }
+
+  function findNearestEntryForPath(
+    href: string | null,
+    path: string,
+    wordIndex: number | null
+  ): TimelineEntry | null {
+    if (!href) {
+      return null;
+    }
+
+    const entries = timelinePathGroupsRef.current.get(
+      timelineLookupKey(href, path, null)
+    );
+
+    if (!entries?.length) {
+      return null;
+    }
+
+    if (wordIndex === null) {
+      return entries[0];
+    }
+
+    let best = entries[0];
+    let bestDistance = Math.abs((parseTimelineRef(best.cfi).wordIndex ?? 0) - wordIndex);
+
+    for (const entry of entries) {
+      const candidateIndex = parseTimelineRef(entry.cfi).wordIndex ?? 0;
+      const distance = Math.abs(candidateIndex - wordIndex);
+      if (distance < bestDistance) {
+        best = entry;
+        bestDistance = distance;
+      }
+    }
+
+    return best;
+  }
+
+  function findNearestEntryForHref(href: string | null): TimelineEntry | null {
+    if (!href) {
+      return null;
+    }
+
+    const entries = timelineHrefGroupsRef.current.get(href);
+    return entries?.[0] ?? null;
+  }
+
+  useEffect(() => {
+    if (status !== "ready" || !timelineEntries.length || !renditionRef.current) {
+      return;
+    }
+
+    const contentsList = (
+      renditionRef.current as Rendition & {
+        getContents?: () => Array<{
+          document?: Document;
+        }>;
+      }
+    ).getContents?.() ?? [];
+
+    const cleanups = contentsList
+      .map((contents) => {
+        const doc = contents.document;
+        if (!doc) {
+          return null;
+        }
+
+        debugLog("word-click:attach", {
+          canonical:
+            doc.querySelector("link[rel='canonical']")?.getAttribute("href") ?? null,
+          pathname: doc.location?.pathname ?? null
+        });
+
+        const handleClick = (event: MouseEvent | PointerEvent) => {
+          const rawTarget = event.target;
+          const target =
+            rawTarget instanceof Element
+              ? rawTarget
+              : rawTarget instanceof Text
+                ? rawTarget.parentElement
+                : doc.elementFromPoint(event.clientX, event.clientY);
+
+          if (!target) {
+            debugLog("word-click:ignored-non-element", {
+              nodeType: rawTarget instanceof Node ? rawTarget.nodeType : null
+            });
+            return;
+          }
+
+          if (target.closest("a[href]")) {
+            debugLog("word-click:ignored-link");
+            return;
+          }
+
+          const position = resolveClickTextPosition(event, doc);
+          if (!position) {
+            debugLog("word-click:no-position", {
+              x: event.clientX,
+              y: event.clientY,
+              tag: target.tagName
+            });
+            return;
+          }
+
+          const href = normalizeHref(
+            doc.querySelector("link[rel='canonical']")?.getAttribute("href") ??
+              location?.start.href ??
+              null
+          );
+
+          debugLog("word-click:position", {
+            href,
+            offset: position.offset,
+            textSample: position.node.textContent?.slice(0, 80) ?? ""
+          });
+
+          let currentElement: Element | null = position.node.parentElement;
+          while (currentElement && currentElement !== doc.body.parentElement) {
+            const path = buildElementPath(currentElement, doc);
+            const wordIndex = wordIndexWithinElement(currentElement, position.node, position.offset);
+            const exactEntry = timelineLookupRef.current.get(
+              timelineLookupKey(href, path, wordIndex)
+            );
+            const nearestPathEntry = exactEntry ?? findNearestEntryForPath(href, path, wordIndex);
+
+            if (nearestPathEntry) {
+              debugLog("word-click:seek", {
+                href,
+                path,
+                wordIndex,
+                start: nearestPathEntry.start,
+                word: nearestPathEntry.word,
+                exact: Boolean(exactEntry)
+              });
+              event.preventDefault();
+              setShowReaderUi(true);
+              handleScrub(nearestPathEntry.start);
+              return;
+            }
+
+            debugLog("word-click:miss", {
+              href,
+              path,
+              wordIndex,
+              tag: currentElement.tagName
+            });
+
+            currentElement = currentElement.parentElement;
+          }
+
+          const hrefFallback = findNearestEntryForHref(href);
+          if (hrefFallback) {
+            debugLog("word-click:seek-href-fallback", {
+              href,
+              start: hrefFallback.start,
+              word: hrefFallback.word
+            });
+            event.preventDefault();
+            setShowReaderUi(true);
+            handleScrub(hrefFallback.start);
+            return;
+          }
+
+          debugLog("word-click:no-match-found", { href });
+        };
+
+        doc.addEventListener("click", handleClick);
+        doc.addEventListener("pointerup", handleClick);
+        return () => {
+          doc.removeEventListener("click", handleClick);
+          doc.removeEventListener("pointerup", handleClick);
+        };
+      })
+      .filter((cleanup): cleanup is () => void => Boolean(cleanup));
+
+    return () => {
+      for (const cleanup of cleanups) {
+        cleanup();
+      }
+    };
+  }, [location?.start.href, status, timelineEntries]);
 
   function handleInputChange(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
