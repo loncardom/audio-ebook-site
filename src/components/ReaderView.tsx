@@ -34,7 +34,6 @@ type ReaderViewProps = Pick<
   | "ready"
   | "setCurrentTime"
   | "setDuration"
-  | "setActiveWordIndex"
   | "setIsPlaying"
   | "setShowReaderUi"
   | "showReaderUi"
@@ -42,7 +41,6 @@ type ReaderViewProps = Pick<
   | "syncActiveWord"
   | "togglePlayback"
   | "turnPage"
-  | "clearActiveHighlight"
 >;
 
 export function ReaderView(props: ReaderViewProps) {
@@ -66,15 +64,13 @@ export function ReaderView(props: ReaderViewProps) {
     ready,
     setCurrentTime,
     setDuration,
-    setActiveWordIndex,
     setIsPlaying,
     setShowReaderUi,
     showReaderUi,
     status,
     syncActiveWord,
     togglePlayback,
-    turnPage,
-    clearActiveHighlight
+    turnPage
   } = props;
 
   return (
@@ -112,8 +108,7 @@ export function ReaderView(props: ReaderViewProps) {
         onEnded={() => {
           setIsPlaying(false);
           setCurrentTime(duration);
-          setActiveWordIndex(null);
-          clearActiveHighlight();
+          syncActiveWord(duration);
         }}
       />
 

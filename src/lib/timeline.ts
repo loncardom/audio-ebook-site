@@ -67,13 +67,17 @@ export function findTimelineIndexAtTime(
     lastIndex !== null &&
     entries[lastIndex] &&
     currentTime >= entries[lastIndex].start &&
-    currentTime <= entries[lastIndex].end
+    currentTime <= entries[lastIndex + 1]?.start
   ) {
     return lastIndex;
   }
 
-  if (currentTime < entries[0].start || currentTime > entries[entries.length - 1].end) {
-    return null;
+  if (currentTime <= entries[0].start) {
+    return 0;
+  }
+
+  if (currentTime >= entries[entries.length - 1].end) {
+    return entries.length - 1;
   }
 
   let low = 0;
@@ -96,5 +100,5 @@ export function findTimelineIndexAtTime(
     return mid;
   }
 
-  return null;
+  return Math.max(0, high);
 }
