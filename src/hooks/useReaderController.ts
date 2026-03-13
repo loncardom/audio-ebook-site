@@ -20,6 +20,7 @@ import {
 
 type ReaderStatus = "idle" | "loading" | "ready" | "error";
 type RoutePath = "/" | "/reader";
+const SPREAD_BREAKPOINT_PX = 580;
 
 export function useReaderController() {
   const viewerRef = useRef<HTMLDivElement | null>(null);
@@ -37,6 +38,8 @@ export function useReaderController() {
   const timelineLookupRef = useRef<Map<string, TimelineEntry>>(new Map());
   const timelinePathGroupsRef = useRef<Map<string, TimelineEntry[]>>(new Map());
   const timelineHrefGroupsRef = useRef<Map<string, TimelineEntry[]>>(new Map());
+  const spreadLayoutRef = useRef(false);
+  const locationRef = useRef<RelocatedLocation | null>(null);
 
   const [routePath, setRoutePath] = useState<RoutePath>(
     window.location.pathname === "/reader" ? "/reader" : "/"
@@ -59,12 +62,106 @@ export function useReaderController() {
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [activeWordIndex, setActiveWordIndex] = useState<number | null>(null);
+  const [isSpreadLayout, setIsSpreadLayout] = useState(spreadLayoutRef.current);
+
+  const updateSpreadLayout = useCallback((width: number) => {
+    const nextIsSpreadLayout = width >= SPREAD_BREAKPOINT_PX;
+    if (spreadLayoutRef.current === nextIsSpreadLayout) {
+      return;
+    }
+
+    spreadLayoutRef.current = nextIsSpreadLayout;
+    setIsSpreadLayout(nextIsSpreadLayout);
+    debugLog("layout:breakpoint-change", { width, spread: nextIsSpreadLayout });
+  }, []);
 
   const handleViewerRef = useCallback((node: HTMLDivElement | null) => {
     viewerRef.current = node;
     setViewerMounted(Boolean(node));
-    debugLog("viewerRef:update", { mounted: Boolean(node) });
+    updateSpreadLayout(node?.clientWidth ?? 0);
+    debugLog("viewerRef:update", { mounted: Boolean(node), width: node?.clientWidth ?? 0 });
+  }, [updateSpreadLayout]);
+
+  const currentSpreadMode = useCallback(() => {
+    return spreadLayoutRef.current ? "both" : "none";
   }, []);
+
+  const mountRendition = useCallback(
+    async (book: Book, displayTarget?: string) => {
+      if (!viewerRef.current) {
+        throw new Error("Reader viewport is unavailable.");
+      }
+
+      viewerRef.current.innerHTML = "";
+
+      const rendition = book.renderTo(viewerRef.current, {
+        width: "100%",
+        height: "100%",
+        spread: currentSpreadMode(),
+        flow: "paginated",
+        manager: "default"
+      });
+      debugLog("loadBook:rendition-created", { spread: currentSpreadMode() });
+
+      rendition.themes.fontSize("112%");
+      rendition.themes.default({
+        body: {
+          "font-size": "1.12em",
+          "line-height": "1.6",
+          color: "#221b16"
+        },
+        ".sync-word-highlight-dom": {
+          "background-color": "rgba(255, 159, 67, 0.30)",
+          color: "#1a120c",
+          "border-radius": "0.22em",
+          "box-shadow": "0 0 0 0.12em rgba(255, 159, 67, 0.18)"
+        }
+      });
+
+      const handleRelocated = (nextLocation: RelocatedLocation) => {
+        debugLog("rendition:relocated", {
+          href: nextLocation.start.href,
+          cfi: nextLocation.start.cfi,
+          percentage: nextLocation.percentage
+        });
+        setLocation(nextLocation);
+        const cfi = nextLocation.start.cfi;
+        if (!cfi) {
+          setCurrentLocationIndex(null);
+          return;
+        }
+
+        const nextIndex = book.locations.locationFromCfi(cfi);
+        setCurrentLocationIndex(Number.isFinite(nextIndex) ? nextIndex : null);
+      };
+
+      const handleReaderKeyUp = (event: KeyboardEvent) => {
+        if (event.key === "ArrowLeft" || event.keyCode === 37) {
+          event.preventDefault();
+          void turnPage("prev");
+        }
+
+        if (event.key === "ArrowRight" || event.keyCode === 39) {
+          event.preventDefault();
+          void turnPage("next");
+        }
+      };
+
+      rendition.on("relocated", handleRelocated);
+      rendition.on("keyup", handleReaderKeyUp);
+      renditionRef.current = rendition;
+
+      debugLog("loadBook:display-start", {
+        target: displayTarget ?? null,
+        spread: currentSpreadMode()
+      });
+      await rendition.display(displayTarget);
+      debugLog("loadBook:display-done", { spread: currentSpreadMode() });
+
+      return rendition;
+    },
+    [currentSpreadMode]
+  );
 
   async function readFileAsArrayBuffer(file: File): Promise<ArrayBuffer> {
     return new Promise((resolve, reject) => {
@@ -284,6 +381,10 @@ export function useReaderController() {
   }, [isTurningPage]);
 
   useEffect(() => {
+    locationRef.current = location;
+  }, [location]);
+
+  useEffect(() => {
     appActiveRef.current = true;
     const handlePopState = () => {
       setRoutePath(window.location.pathname === "/reader" ? "/reader" : "/");
@@ -300,6 +401,30 @@ export function useReaderController() {
       cleanupReader();
     };
   }, []);
+
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!viewer) {
+      updateSpreadLayout(0);
+      return;
+    }
+
+    updateSpreadLayout(viewer.clientWidth);
+
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) {
+        return;
+      }
+
+      updateSpreadLayout(entry.contentRect.width);
+    });
+
+    observer.observe(viewer);
+    return () => {
+      observer.disconnect();
+    };
+  }, [viewerMounted, updateSpreadLayout]);
 
   useEffect(() => {
     if (autoBootAttemptedRef.current || !import.meta.env.DEV) {
@@ -505,6 +630,53 @@ export function useReaderController() {
     }
   }
 
+  useEffect(() => {
+    if (status !== "ready" || !bookRef.current || !viewerRef.current) {
+      return;
+    }
+
+    const currentCfi = locationRef.current?.start.cfi;
+    const book = bookRef.current;
+    const previousRendition = renditionRef.current;
+
+    if (!previousRendition) {
+      return;
+    }
+
+    let cancelled = false;
+    clearActiveHighlight();
+    previousRendition.destroy();
+    renditionRef.current = null;
+
+    void mountRendition(book, currentCfi)
+      .then(() => {
+        if (cancelled || bookRef.current !== book) {
+          return;
+        }
+
+        debugLog("layout:spread-updated", {
+          spread: currentSpreadMode(),
+          width: viewerRef.current?.clientWidth ?? 0,
+          target: currentCfi ?? null
+        });
+      })
+      .catch((error) => {
+        if (cancelled || bookRef.current !== book) {
+          return;
+        }
+
+        debugLog("layout:spread-update-failed", error);
+        setStatus("error");
+        setErrorMessage(
+          error instanceof Error ? error.message : "The reader layout could not be updated."
+        );
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isSpreadLayout, mountRendition, status, currentSpreadMode]);
+
   async function loadBookFromBinary(bookData: ArrayBuffer, title: string) {
     if (!viewerRef.current) {
       setStatus("error");
@@ -533,68 +705,8 @@ export function useReaderController() {
       await book.ready;
       debugLog("loadBook:book-ready");
 
-      const rendition = book.renderTo(viewerRef.current, {
-        width: "100%",
-        height: "100%",
-        spread: "none",
-        flow: "paginated",
-        manager: "default"
-      });
-      debugLog("loadBook:rendition-created");
-
-      rendition.themes.fontSize("112%");
-      rendition.themes.default({
-        body: {
-          "font-size": "1.12em",
-          "line-height": "1.6",
-          color: "#221b16"
-        },
-        ".sync-word-highlight-dom": {
-          "background-color": "rgba(255, 159, 67, 0.30)",
-          color: "#1a120c",
-          "border-radius": "0.22em",
-          "box-shadow": "0 0 0 0.12em rgba(255, 159, 67, 0.18)"
-        }
-      });
-
-      const handleRelocated = (nextLocation: RelocatedLocation) => {
-        debugLog("rendition:relocated", {
-          href: nextLocation.start.href,
-          cfi: nextLocation.start.cfi,
-          percentage: nextLocation.percentage
-        });
-        setLocation(nextLocation);
-        const cfi = nextLocation.start.cfi;
-        if (!cfi) {
-          setCurrentLocationIndex(null);
-          return;
-        }
-
-        const nextIndex = book.locations.locationFromCfi(cfi);
-        setCurrentLocationIndex(Number.isFinite(nextIndex) ? nextIndex : null);
-      };
-
-      const handleReaderKeyUp = (event: KeyboardEvent) => {
-        if (event.key === "ArrowLeft" || event.keyCode === 37) {
-          event.preventDefault();
-          void turnPage("prev");
-        }
-
-        if (event.key === "ArrowRight" || event.keyCode === 39) {
-          event.preventDefault();
-          void turnPage("next");
-        }
-      };
-
-      rendition.on("relocated", handleRelocated);
-      rendition.on("keyup", handleReaderKeyUp);
-
       bookRef.current = book;
-      renditionRef.current = rendition;
-
-      debugLog("loadBook:display-start");
-      await rendition.display();
-      debugLog("loadBook:display-done");
+      await mountRendition(book);
       setStatus("ready");
       debugLog("loadBook:status-ready");
 
@@ -930,6 +1042,7 @@ export function useReaderController() {
     bookTitle,
     chapter,
     showReaderUi,
+    isSpreadLayout,
     ready,
     pageLabel,
     completion,

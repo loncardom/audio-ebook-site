@@ -26,6 +26,7 @@ type ReaderViewProps = Pick<
   | "errorMessage"
   | "handleScrub"
   | "handleViewerRef"
+  | "isSpreadLayout"
   | "isPlaying"
   | "isTurningPage"
   | "pageLabel"
@@ -57,6 +58,7 @@ export function ReaderView(props: ReaderViewProps) {
     errorMessage,
     handleScrub,
     handleViewerRef,
+    isSpreadLayout,
     isPlaying,
     isTurningPage,
     pageLabel,
@@ -157,7 +159,7 @@ export function ReaderView(props: ReaderViewProps) {
         </div>
 
         <div className="reader-stage">
-          <div className="reader-divider" />
+          {ready && isSpreadLayout ? <div className="reader-divider" /> : null}
 
           {errorMessage ? <p className="reader-error">{errorMessage}</p> : null}
 

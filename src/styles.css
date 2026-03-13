@@ -785,10 +785,6 @@ svg {
     font-size: 0.78rem;
   }
 
-  .reader-divider {
-    display: none;
-  }
-
   .nav-button {
     width: 36px;
     height: 92px;
@@ -821,5 +817,11 @@ svg {
   .fullscreen-viewport {
     padding-top: 104px;
     padding-bottom: 72px;
+  }
+}
+
+@media (max-width: 580px) {
+  .reader-divider {
+    display: none;
   }
 }
