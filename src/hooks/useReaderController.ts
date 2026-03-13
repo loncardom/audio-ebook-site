@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ChangeEvent, type DragEv
 import ePub, { Book, RelocatedLocation, Rendition } from "epubjs";
 import { buildParentAssetUrl, isEpubFile } from "../lib/assets";
 import { debugLog } from "../lib/debug";
+import { fetchGoogleBookMetadata } from "../lib/googleBooks";
 import {
   buildElementPath,
   resolveClickTextPosition,
@@ -22,6 +23,12 @@ type ReaderStatus = "idle" | "loading" | "ready" | "error";
 type RoutePath = "/" | "/reader";
 const SPREAD_BREAKPOINT_PX = 800;
 type ThemePreference = "system" | "light" | "dark";
+type BookMetadata = {
+  title: string | null;
+  author: string | null;
+  description: string | null;
+  coverUrl: string | null;
+};
 
 export function useReaderController() {
   const viewerRef = useRef<HTMLDivElement | null>(null);
@@ -50,6 +57,9 @@ export function useReaderController() {
   const [isDragging, setIsDragging] = useState(false);
   const [isTurningPage, setIsTurningPage] = useState(false);
   const [bookTitle, setBookTitle] = useState("No book loaded");
+  const [bookAuthor, setBookAuthor] = useState<string | null>(null);
+  const [bookDescription, setBookDescription] = useState<string | null>(null);
+  const [bookCoverUrl, setBookCoverUrl] = useState<string | null>(null);
   const [location, setLocation] = useState<RelocatedLocation | null>(null);
   const [totalLocations, setTotalLocations] = useState(0);
   const [currentLocationIndex, setCurrentLocationIndex] = useState<number | null>(null);
@@ -70,6 +80,13 @@ export function useReaderController() {
   const [themePreference, setThemePreference] = useState<ThemePreference>("system");
 
   const isDarkMode = themePreference === "system" ? systemPrefersDark : themePreference === "dark";
+
+  const applyBookMetadata = useCallback((metadata: BookMetadata) => {
+    setBookTitle(metadata.title?.trim() || "Untitled book");
+    setBookAuthor(metadata.author?.trim() || null);
+    setBookDescription(metadata.description?.trim() || null);
+    setBookCoverUrl(metadata.coverUrl ?? null);
+  }, []);
 
   const updateSpreadLayout = useCallback((width: number) => {
     if (width <= 0) {
@@ -678,7 +695,6 @@ export function useReaderController() {
     setLocation(null);
     setTotalLocations(0);
     setCurrentLocationIndex(null);
-    setBookTitle("No book loaded");
     navigate("/");
   }
 
@@ -709,6 +725,9 @@ export function useReaderController() {
     setStatus("loading");
     setErrorMessage("");
     setBookTitle(title.replace(/\.epub$/i, ""));
+    setBookAuthor(null);
+    setBookDescription(null);
+    setBookCoverUrl(null);
     setLocation(null);
     setTotalLocations(0);
     setCurrentLocationIndex(null);
@@ -723,6 +742,48 @@ export function useReaderController() {
       debugLog("loadBook:book-opened");
       await book.ready;
       debugLog("loadBook:book-ready");
+
+      const epubMetadata = await book.loaded.metadata;
+      const epubCoverUrl = await book.coverUrl().catch(() => null);
+      const fallbackMetadata: BookMetadata = {
+        title: epubMetadata.title?.trim() || title.replace(/\.epub$/i, ""),
+        author: epubMetadata.creator?.trim() || null,
+        description: epubMetadata.description?.trim() || null,
+        coverUrl: epubCoverUrl
+      };
+
+      applyBookMetadata(fallbackMetadata);
+      debugLog("metadata:epub", {
+        title: fallbackMetadata.title,
+        author: fallbackMetadata.author,
+        hasCover: Boolean(fallbackMetadata.coverUrl)
+      });
+
+      void fetchGoogleBookMetadata(fallbackMetadata.title, fallbackMetadata.author)
+        .then((googleMetadata) => {
+          if (bookRef.current !== book || !googleMetadata) {
+            return;
+          }
+
+          applyBookMetadata({
+            title: googleMetadata.title ?? fallbackMetadata.title,
+            author: googleMetadata.authors.join(", ") || fallbackMetadata.author,
+            description: googleMetadata.description ?? fallbackMetadata.description,
+            coverUrl: googleMetadata.coverUrl ?? fallbackMetadata.coverUrl
+          });
+          debugLog("metadata:google", {
+            title: googleMetadata.title ?? fallbackMetadata.title,
+            author: googleMetadata.authors.join(", ") || fallbackMetadata.author,
+            hasCover: Boolean(googleMetadata.coverUrl ?? fallbackMetadata.coverUrl)
+          });
+        })
+        .catch((error) => {
+          if (bookRef.current !== book) {
+            return;
+          }
+
+          debugLog("metadata:google-failed", error);
+        });
 
       bookRef.current = book;
       await mountRendition(book);
@@ -1074,6 +1135,9 @@ export function useReaderController() {
     isDragging,
     isTurningPage,
     bookTitle,
+    bookAuthor,
+    bookDescription,
+    bookCoverUrl,
     chapter,
     showReaderUi,
     isSpreadLayout,

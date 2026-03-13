@@ -1,4 +1,21 @@
 declare module "epubjs" {
+  export interface PackagingMetadataObject {
+    title: string;
+    creator: string;
+    description: string;
+    pubdate: string;
+    publisher: string;
+    identifier: string;
+    language: string;
+    rights: string;
+    modified_date: string;
+    layout: string;
+    orientation: string;
+    flow: string;
+    viewport: string;
+    spread: string;
+  }
+
   export interface LocationStart {
     cfi?: string;
     displayed?: {
@@ -59,8 +76,12 @@ declare module "epubjs" {
 
   export interface Book {
     ready: Promise<void>;
+    loaded: {
+      metadata: Promise<PackagingMetadataObject>;
+    };
     locations: Locations;
     open(input: string | ArrayBuffer, what?: string): Promise<object>;
+    coverUrl(): Promise<string | null>;
     renderTo(element: Element, options?: RenditionOptions): Rendition;
     destroy(): void;
   }

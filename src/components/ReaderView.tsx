@@ -17,6 +17,8 @@ type ReaderViewProps = Pick<
   ReaderController,
   | "audioRef"
   | "audioSrc"
+  | "bookAuthor"
+  | "bookCoverUrl"
   | "bookTitle"
   | "chapter"
   | "closeReader"
@@ -51,6 +53,8 @@ export function ReaderView(props: ReaderViewProps) {
   const {
     audioRef,
     audioSrc,
+    bookAuthor,
+    bookCoverUrl,
     bookTitle,
     chapter,
     closeReader,
@@ -164,9 +168,17 @@ export function ReaderView(props: ReaderViewProps) {
           </div>
 
           <div className="reader-metainfo">
-            <span className="reader-book-title">{bookTitle}</span>
-            <span className="reader-title-separator">-</span>
-            <span className="reader-chapter-title">{chapter}</span>
+            {bookCoverUrl ? (
+              <img className="reader-cover-thumb" src={bookCoverUrl} alt="" aria-hidden="true" />
+            ) : null}
+            <div className="reader-meta-copy">
+              <span className="reader-book-title">{bookTitle}</span>
+              <div className="reader-meta-secondary">
+                {bookAuthor ? <span className="reader-book-author">{bookAuthor}</span> : null}
+                {bookAuthor && chapter ? <span className="reader-title-separator">-</span> : null}
+                <span className="reader-chapter-title">{chapter}</span>
+              </div>
+            </div>
           </div>
 
           <div className="reader-toolbar reader-toolbar-right">

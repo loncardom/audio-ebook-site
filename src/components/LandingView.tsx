@@ -3,6 +3,10 @@ import { BookIcon, UploadIcon } from "./icons";
 
 type LandingViewProps = Pick<
   ReaderController,
+  | "bookAuthor"
+  | "bookCoverUrl"
+  | "bookDescription"
+  | "bookTitle"
   | "inputRef"
   | "isDragging"
   | "landingNotice"
@@ -14,6 +18,10 @@ type LandingViewProps = Pick<
 
 export function LandingView(props: LandingViewProps) {
   const {
+    bookAuthor,
+    bookCoverUrl,
+    bookDescription,
+    bookTitle,
     inputRef,
     isDragging,
     landingNotice,
@@ -96,6 +104,21 @@ export function LandingView(props: LandingViewProps) {
               The file stays on this machine. Open it directly into the redesigned
               reader interface.
             </p>
+
+            {bookCoverUrl || (bookTitle && bookTitle !== "No book loaded") ? (
+              <div className="book-preview">
+                {bookCoverUrl ? (
+                  <img className="book-preview-cover" src={bookCoverUrl} alt="" aria-hidden="true" />
+                ) : null}
+                <div className="book-preview-copy">
+                  <strong>{bookTitle}</strong>
+                  {bookAuthor ? <span>{bookAuthor}</span> : null}
+                  {bookDescription ? (
+                    <p>{bookDescription.slice(0, 160)}{bookDescription.length > 160 ? "..." : ""}</p>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
 
             {landingNotice ? <p className="landing-notice">{landingNotice}</p> : null}
 
