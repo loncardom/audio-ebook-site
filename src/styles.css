@@ -709,7 +709,7 @@ svg {
   background: linear-gradient(90deg, #f78a34, #df5b0e);
 }
 
-@media (max-width: 1080px) {
+@media (max-width: 580px) {
   .landing-hero {
     grid-template-columns: 1fr;
   }
