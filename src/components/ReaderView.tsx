@@ -26,6 +26,7 @@ type ReaderViewProps = Pick<
   | "errorMessage"
   | "handleScrub"
   | "handleViewerRef"
+  | "isDarkMode"
   | "isSpreadLayout"
   | "isPlaying"
   | "isTurningPage"
@@ -40,6 +41,7 @@ type ReaderViewProps = Pick<
   | "status"
   | "syncActiveWord"
   | "togglePlayback"
+  | "toggleDarkMode"
   | "turnPage"
 >;
 
@@ -56,6 +58,7 @@ export function ReaderView(props: ReaderViewProps) {
     errorMessage,
     handleScrub,
     handleViewerRef,
+    isDarkMode,
     isSpreadLayout,
     isPlaying,
     isTurningPage,
@@ -70,12 +73,13 @@ export function ReaderView(props: ReaderViewProps) {
     status,
     syncActiveWord,
     togglePlayback,
+    toggleDarkMode,
     turnPage
   } = props;
 
   return (
     <main
-      className={`reader-screen ${showReaderUi ? "reader-ui-visible" : ""}`}
+      className={`reader-screen ${showReaderUi ? "reader-ui-visible" : ""} ${isDarkMode ? "dark-mode" : ""}`}
       onPointerMove={() => setShowReaderUi(true)}
       onClick={() => setShowReaderUi(true)}
     >
@@ -138,7 +142,11 @@ export function ReaderView(props: ReaderViewProps) {
           </div>
 
           <div className="reader-toolbar reader-toolbar-right">
-            <IconButton label="Toggle dark mode">
+            <IconButton
+              label="Toggle dark mode"
+              active={isDarkMode}
+              onClick={toggleDarkMode}
+            >
               <MoonIcon />
             </IconButton>
             <IconButton label="Open settings">

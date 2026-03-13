@@ -21,6 +21,7 @@ import {
 type ReaderStatus = "idle" | "loading" | "ready" | "error";
 type RoutePath = "/" | "/reader";
 const SPREAD_BREAKPOINT_PX = 800;
+type ThemePreference = "system" | "light" | "dark";
 
 export function useReaderController() {
   const viewerRef = useRef<HTMLDivElement | null>(null);
@@ -63,6 +64,12 @@ export function useReaderController() {
   const [activeWordIndex, setActiveWordIndex] = useState<number | null>(null);
   const [isSpreadLayout, setIsSpreadLayout] = useState(spreadLayoutRef.current);
   const [renderVersion, setRenderVersion] = useState(0);
+  const [systemPrefersDark, setSystemPrefersDark] = useState(() => {
+    return window.matchMedia("(prefers-color-scheme: dark)").matches;
+  });
+  const [themePreference, setThemePreference] = useState<ThemePreference>("system");
+
+  const isDarkMode = themePreference === "system" ? systemPrefersDark : themePreference === "dark";
 
   const updateSpreadLayout = useCallback((width: number) => {
     if (width <= 0) {
@@ -106,21 +113,7 @@ export function useReaderController() {
         spread: "auto",
         minSpreadWidth: SPREAD_BREAKPOINT_PX
       });
-
       rendition.themes.fontSize("112%");
-      rendition.themes.default({
-        body: {
-          "font-size": "1.12em",
-          "line-height": "1.6",
-          color: "#221b16"
-        },
-        ".sync-word-highlight-dom": {
-          "background-color": "rgba(255, 159, 67, 0.30)",
-          color: "#1a120c",
-          "border-radius": "0.22em",
-          "box-shadow": "0 0 0 0.12em rgba(255, 159, 67, 0.18)"
-        }
-      });
 
       const handleRelocated = (nextLocation: RelocatedLocation) => {
         debugLog("rendition:relocated", {
@@ -170,6 +163,58 @@ export function useReaderController() {
     },
     []
   );
+
+  const applyReaderTheme = useCallback((darkMode: boolean) => {
+    if (!renditionRef.current) {
+      return;
+    }
+
+    const bodyColor = darkMode ? "#f3eadf" : "#221b16";
+    const bodyBackground = darkMode ? "#1a1612" : "#fdf9f2";
+    const linkColor = darkMode ? "#ffb067" : "#a04f13";
+    const highlightBackground = darkMode
+      ? "rgba(255, 176, 103, 0.28)"
+      : "rgba(255, 159, 67, 0.30)";
+    const highlightColor = darkMode ? "#fff7ef" : "#1a120c";
+    const highlightShadow = darkMode
+      ? "0 0 0 0.12em rgba(255, 176, 103, 0.16)"
+      : "0 0 0 0.12em rgba(255, 159, 67, 0.18)";
+
+    renditionRef.current.themes.default({
+      body: {
+        "font-size": "1.12em",
+        "line-height": "1.6",
+        color: bodyColor,
+        "background-color": bodyBackground
+      },
+      a: {
+        color: linkColor
+      },
+      ".sync-word-highlight-dom": {
+        "background-color": highlightBackground,
+        color: highlightColor,
+        "border-radius": "0.22em",
+        "box-shadow": highlightShadow
+      }
+    });
+
+    const contentsList = (
+      renditionRef.current as Rendition & {
+        getContents?: () => Array<{ document?: Document }>;
+      }
+    ).getContents?.() ?? [];
+
+    for (const contents of contentsList) {
+      const doc = contents.document;
+      if (!doc) {
+        continue;
+      }
+
+      doc.documentElement.style.colorScheme = darkMode ? "dark" : "light";
+      doc.body.style.backgroundColor = bodyBackground;
+      doc.body.style.color = bodyColor;
+    }
+  }, []);
 
   async function readFileAsArrayBuffer(file: File): Promise<ArrayBuffer> {
     return new Promise((resolve, reject) => {
@@ -407,6 +452,18 @@ export function useReaderController() {
   }, []);
 
   useEffect(() => {
+    const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
+    const handleChange = (event: MediaQueryListEvent) => {
+      setSystemPrefersDark(event.matches);
+    };
+
+    mediaQuery.addEventListener("change", handleChange);
+    return () => {
+      mediaQuery.removeEventListener("change", handleChange);
+    };
+  }, []);
+
+  useEffect(() => {
     const viewer = viewerRef.current;
     if (!viewer) {
       updateSpreadLayout(0);
@@ -430,6 +487,10 @@ export function useReaderController() {
       observer.disconnect();
     };
   }, [viewerMounted, updateSpreadLayout]);
+
+  useEffect(() => {
+    applyReaderTheme(isDarkMode);
+  }, [applyReaderTheme, isDarkMode, renderVersion]);
 
   useEffect(() => {
     if (autoBootAttemptedRef.current || !import.meta.env.DEV) {
@@ -665,6 +726,7 @@ export function useReaderController() {
 
       bookRef.current = book;
       await mountRendition(book);
+      applyReaderTheme(isDarkMode);
       setStatus("ready");
       debugLog("loadBook:status-ready");
 
@@ -978,6 +1040,20 @@ export function useReaderController() {
     inputRef.current?.click();
   }
 
+  function toggleDarkMode() {
+    setThemePreference((current) => {
+      if (current === "system") {
+        return systemPrefersDark ? "light" : "dark";
+      }
+
+      if (current === "dark") {
+        return "light";
+      }
+
+      return "dark";
+    });
+  }
+
   const ready = status === "ready";
   const pageLabel = pageNumberLabel(location, totalLocations, currentLocationIndex);
   const completion =
@@ -1009,6 +1085,7 @@ export function useReaderController() {
     currentTime,
     duration,
     playerTimeLabel,
+    isDarkMode,
     inputRef,
     audioRef,
     handleViewerRef,
@@ -1019,6 +1096,7 @@ export function useReaderController() {
     handleInputChange,
     handleDrop,
     openFilePicker,
+    toggleDarkMode,
     setIsDragging,
     setShowReaderUi,
     syncActiveWord,
