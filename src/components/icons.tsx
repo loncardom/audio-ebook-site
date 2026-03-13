@@ -42,17 +42,12 @@ export function MoonIcon() {
 export function SettingsIcon() {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="m12 3 1.2 2.2 2.5.4.5 2.5 2.1 1.2-1 2.3 1 2.4-2.1 1.2-.5 2.5-2.5.4L12 21l-2.2-1.2-2.5-.4-.5-2.5-2.1-1.2 1-2.4-1-2.3L6.8 8l.5-2.5 2.5-.4L12 3Z" />
-      <circle cx="12" cy="12" r="2.6" />
-    </svg>
-  );
-}
-
-export function StatsIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M4 4v15a1 1 0 0 0 1 1h15" />
-      <path d="M9 16v-3M13 16V8M17 16V5" />
+      <path d="M4 7h16" />
+      <path d="M4 17h16" />
+      <path d="M10 12h10" />
+      <circle cx="8" cy="7" r="2" />
+      <circle cx="16" cy="17" r="2" />
+      <circle cx="8" cy="12" r="2" />
     </svg>
   );
 }
@@ -60,8 +55,14 @@ export function StatsIcon() {
 export function ExpandIcon() {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M8 4H4v4M16 4h4v4M8 20H4v-4M20 20h-4v-4" />
-      <path d="m9 9-5-5M15 9l5-5M9 15l-5 5M15 15l5 5" />
+      <path d="M9 4H4v5" />
+      <path d="M15 4h5v5" />
+      <path d="M20 15v5h-5" />
+      <path d="M4 15v5h5" />
+      <path d="M9 4 4 9" />
+      <path d="m15 4 5 5" />
+      <path d="m20 15-5 5" />
+      <path d="m9 20-5-5" />
     </svg>
   );
 }

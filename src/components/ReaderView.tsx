@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "react";
 import type { ReaderController } from "../hooks/useReaderController";
 import { IconButton } from "./IconButton";
 import {
@@ -9,8 +10,7 @@ import {
   PauseIcon,
   PlayIcon,
   SearchIcon,
-  SettingsIcon,
-  StatsIcon
+  SettingsIcon
 } from "./icons";
 
 type ReaderViewProps = Pick<
@@ -46,6 +46,8 @@ type ReaderViewProps = Pick<
 >;
 
 export function ReaderView(props: ReaderViewProps) {
+  const shellRef = useRef<HTMLElement | null>(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const {
     audioRef,
     audioSrc,
@@ -77,8 +79,34 @@ export function ReaderView(props: ReaderViewProps) {
     turnPage
   } = props;
 
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(document.fullscreenElement === shellRef.current);
+    };
+
+    document.addEventListener("fullscreenchange", handleFullscreenChange);
+    return () => {
+      document.removeEventListener("fullscreenchange", handleFullscreenChange);
+    };
+  }, []);
+
+  async function toggleFullscreen() {
+    const shell = shellRef.current;
+    if (!shell) {
+      return;
+    }
+
+    if (document.fullscreenElement === shell) {
+      await document.exitFullscreen();
+      return;
+    }
+
+    await shell.requestFullscreen();
+  }
+
   return (
     <main
+      ref={shellRef}
       className={`reader-screen ${showReaderUi ? "reader-ui-visible" : ""} ${isDarkMode ? "dark-mode" : ""}`}
       onPointerMove={() => setShowReaderUi(true)}
       onClick={() => setShowReaderUi(true)}
@@ -152,10 +180,11 @@ export function ReaderView(props: ReaderViewProps) {
             <IconButton label="Open settings">
               <SettingsIcon />
             </IconButton>
-            <IconButton label="Show progress">
-              <StatsIcon />
-            </IconButton>
-            <IconButton label="Fullscreen">
+            <IconButton
+              label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+              active={isFullscreen}
+              onClick={() => void toggleFullscreen()}
+            >
               <ExpandIcon />
             </IconButton>
           </div>
