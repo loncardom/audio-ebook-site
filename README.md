@@ -1,19 +1,25 @@
-# Audio Ebook Site
+# Audio eBook Reader
 
-Local EPUB reader built with Vite, React, and TypeScript.
+Audio eBook Reader is a local-first reading app built with Vite, React, and TypeScript.
+
+## Purpose
+
+Upload:
+- an EPUB
+- the associated audiobook
+- a mapping file that represents the alignment between the two
+
+The app opens the book in a full-screen reader, plays synced audio, and highlights the current spoken word or phrase.
+
+## Credits
+
+- Coded with ChatGPT Codex 5.4
+- Design inspired by https://bibliopod.vercel.app/
+- Heavy use of the excellent epub.js library
 
 ## Run
 
 ```bash
-cd audio-ebook-site
 npm install
 npm run dev
 ```
-
-## Current scope
-
-- upload a local `.epub`
-- render it in-browser with `epub.js`
-- paginate with previous/next page controls
-
-Audio playback and sync are intentionally not included yet.
