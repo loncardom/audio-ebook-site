@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ChangeEvent, type DragEvent } from "react";
 import ePub, { Book, RelocatedLocation, Rendition } from "epubjs";
-import { buildParentAssetUrl, isEpubFile } from "../lib/assets";
+import { isEpubFile, resolveAutoBootAssetSet } from "../lib/assets";
 import { debugLog } from "../lib/debug";
 import { fetchGoogleBookMetadata } from "../lib/googleBooks";
 import {
@@ -274,8 +274,25 @@ export function useReaderController() {
       throw new Error(`Failed to load ${url}`);
     }
 
-    const payload = (await response.json()) as TimelineEntry[];
-    const filtered = payload.filter((entry) => typeof entry.cfi === "string" && entry.cfi.length > 0);
+    const payload = (await response.json()) as unknown;
+    if (!Array.isArray(payload)) {
+      debugLog("fetchTimeline:invalid-shape", {
+        url,
+        payloadType: payload === null ? "null" : typeof payload
+      });
+      return [];
+    }
+
+    const filtered = payload.filter(
+      (entry): entry is TimelineEntry => {
+        if (typeof entry !== "object" || entry === null) {
+          return false;
+        }
+
+        const candidate = entry as Partial<TimelineEntry>;
+        return typeof candidate.cfi === "string" && candidate.cfi.length > 0;
+      }
+    );
     debugLog("fetchTimeline:done", { url, total: payload.length, usable: filtered.length });
     return filtered;
   }
@@ -514,24 +531,26 @@ export function useReaderController() {
       return;
     }
 
-    const epubUrl = buildParentAssetUrl("book.epub");
-    const audioUrl = buildParentAssetUrl("asr_0_300s.mp3");
-    const timelineUrl = buildParentAssetUrl("book_timeline.json");
-
-    if (!epubUrl || !audioUrl || !timelineUrl) {
-      return;
-    }
-
     autoBootAttemptedRef.current = true;
-    debugLog("autoboot:start", { epubUrl, audioUrl, timelineUrl });
-    setLandingNotice("");
-    setStatus("loading");
-    setBookTitle("book");
-    setShowReaderUi(true);
-    navigate("/reader");
+    void resolveAutoBootAssetSet()
+      .then(async (assets) => {
+        if (!assets) {
+          debugLog("autoboot:no-assets");
+          return;
+        }
 
-    void Promise.all([fetchArrayBuffer(epubUrl), fetchTimeline(timelineUrl)])
-      .then(([bookData, timeline]) => {
+        debugLog("autoboot:start", assets);
+        setLandingNotice("");
+        setStatus("loading");
+        setBookTitle(assets.bookTitle);
+        setShowReaderUi(true);
+        navigate("/reader");
+
+        const [bookData, timeline] = await Promise.all([
+          fetchArrayBuffer(assets.epubUrl),
+          assets.timelineUrl ? fetchTimeline(assets.timelineUrl) : Promise.resolve([])
+        ]);
+
         if (!appActiveRef.current) {
           debugLog("autoboot:ignored-inactive");
           return;
@@ -540,15 +559,15 @@ export function useReaderController() {
         debugLog("autoboot:assets-ready", {
           bookBytes: bookData.byteLength,
           timelineEntries: timeline.length,
-          audioUrl
+          audioUrl: assets.audioUrl
         });
         setTimelineEntries(timeline);
-        setAudioSrc(audioUrl);
+        setAudioSrc(assets.audioUrl);
         if (!viewerRef.current) {
           debugLog("autoboot:no-viewer");
           throw new Error("Reader viewport was not mounted.");
         }
-        void loadBookFromBinary(bookData, "book.epub");
+        void loadBookFromBinary(bookData, `${assets.bookTitle}.epub`);
       })
       .catch((error) => {
         if (!appActiveRef.current) {

@@ -42,7 +42,7 @@ export function LandingView(props: LandingViewProps) {
               <BookIcon />
             </div>
             <div>
-              <p className="brand-name">BiblioPod Style Reader</p>
+              <p className="brand-name">Audio ePub Reader</p>
               <span className="brand-subtitle">Local-first EPUB reader shell</span>
             </div>
           </div>
@@ -69,7 +69,7 @@ export function LandingView(props: LandingViewProps) {
               </div>
               <div className="stat-card">
                 <strong>Auto sample load</strong>
-                <span>dev mode can boot the parent `book.epub` automatically</span>
+                <span>dev mode can boot a sibling workspace EPUB automatically</span>
               </div>
               <div className="stat-card">
                 <strong>Audio sync</strong>
