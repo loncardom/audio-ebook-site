@@ -43,9 +43,13 @@ type ReaderViewProps = Pick<
   | "showReaderUi"
   | "status"
   | "syncActiveWord"
+  | "selectedTimelineUrl"
+  | "timelineOptions"
   | "togglePlayback"
   | "toggleDarkMode"
   | "toggleDebugUnmatchedWords"
+  | "switchTimelineSource"
+  | "isSwitchingTimeline"
   | "turnPage"
 >;
 
@@ -75,6 +79,7 @@ export function ReaderView(props: ReaderViewProps) {
     pageLabel,
     playerTimeLabel,
     ready,
+    selectedTimelineUrl,
     setCurrentTime,
     setDuration,
     setIsPlaying,
@@ -82,9 +87,12 @@ export function ReaderView(props: ReaderViewProps) {
     showReaderUi,
     status,
     syncActiveWord,
+    switchTimelineSource,
+    timelineOptions,
     togglePlayback,
     toggleDarkMode,
     toggleDebugUnmatchedWords,
+    isSwitchingTimeline,
     turnPage
   } = props;
 
@@ -227,6 +235,37 @@ export function ReaderView(props: ReaderViewProps) {
                   {debugUnmatchedWordsEnabled ? "On" : "Off"}
                 </span>
               </button>
+
+              {timelineOptions.length > 1 ? (
+                <div className="reader-settings-group">
+                  <span className="reader-settings-group-label">Timeline source</span>
+                  <div className="timeline-options-list">
+                    {timelineOptions.map((option) => (
+                      <button
+                        key={option.timelineUrl}
+                        type="button"
+                        className={`settings-toggle-card timeline-option-card ${
+                          selectedTimelineUrl === option.timelineUrl ? "active" : ""
+                        }`}
+                        onClick={() => void switchTimelineSource(option.timelineUrl)}
+                        disabled={isSwitchingTimeline}
+                      >
+                        <span className="settings-toggle-copy">
+                          <strong>{option.label}</strong>
+                          <span>
+                            {selectedTimelineUrl === option.timelineUrl
+                              ? "Currently active"
+                              : "Switch to this timeline file"}
+                          </span>
+                        </span>
+                        <span className="settings-toggle-state">
+                          {selectedTimelineUrl === option.timelineUrl ? "Selected" : "Use"}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
             </div>
           ) : null}
         </div>

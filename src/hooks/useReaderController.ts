@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useRef, useState, type ChangeEvent, type DragEvent } from "react";
 import ePub, { Book, RelocatedLocation, Rendition } from "epubjs";
-import { isEpubFile, resolveAutoBootAssetSet } from "../lib/assets";
+import {
+  isEpubFile,
+  resolveAutoBootAssetSet,
+  type TimelineOption
+} from "../lib/assets";
 import { debugLog } from "../lib/debug";
 import { fetchGoogleBookMetadata } from "../lib/googleBooks";
 import {
@@ -69,6 +73,9 @@ export function useReaderController() {
   const [viewerMounted, setViewerMounted] = useState(false);
   const [audioSrc, setAudioSrc] = useState<string | null>(null);
   const [timelineEntries, setTimelineEntries] = useState<TimelineEntry[]>([]);
+  const [timelineOptions, setTimelineOptions] = useState<TimelineOption[]>([]);
+  const [selectedTimelineUrl, setSelectedTimelineUrl] = useState<string | null>(null);
+  const [isSwitchingTimeline, setIsSwitchingTimeline] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -312,6 +319,37 @@ export function useReaderController() {
     );
     debugLog("fetchTimeline:done", { url, total: payload.length, usable: filtered.length });
     return filtered;
+  }
+
+  async function switchTimelineSource(nextTimelineUrl: string) {
+    if (!nextTimelineUrl || nextTimelineUrl === selectedTimelineUrl) {
+      return;
+    }
+
+    setIsSwitchingTimeline(true);
+    try {
+      const nextTimelineEntries = await fetchTimeline(nextTimelineUrl);
+      setTimelineEntries(nextTimelineEntries);
+      setSelectedTimelineUrl(nextTimelineUrl);
+
+      const nextTime = audioRef.current?.currentTime ?? currentTime;
+      const nextIndex = findTimelineIndexAtTime(
+        nextTimelineEntries,
+        nextTime,
+        activeWordIndexRef.current
+      );
+      activeWordIndexRef.current = nextIndex;
+      setActiveWordIndex(nextIndex);
+      debugLog("timeline:switch", {
+        timelineUrl: nextTimelineUrl,
+        total: nextTimelineEntries.length
+      });
+    } catch (error) {
+      debugLog("timeline:switch-failed", error);
+      setLandingNotice("Could not load the selected timeline JSON.");
+    } finally {
+      setIsSwitchingTimeline(false);
+    }
   }
 
   function clearActiveHighlight() {
@@ -706,6 +744,8 @@ export function useReaderController() {
           audioUrl: assets.audioUrl
         });
         setTimelineEntries(timeline);
+        setTimelineOptions(assets.timelineOptions);
+        setSelectedTimelineUrl(assets.timelineUrl);
         setAudioSrc(assets.audioUrl);
         if (!viewerRef.current) {
           debugLog("autoboot:no-viewer");
@@ -883,6 +923,9 @@ export function useReaderController() {
     setPendingFile(null);
     setStatus("idle");
     setErrorMessage("");
+    setTimelineEntries([]);
+    setTimelineOptions([]);
+    setSelectedTimelineUrl(null);
     setLocation(null);
     setTotalLocations(0);
     setCurrentLocationIndex(null);
@@ -1027,6 +1070,8 @@ export function useReaderController() {
 
     setAudioSrc(null);
     setTimelineEntries([]);
+    setTimelineOptions([]);
+    setSelectedTimelineUrl(null);
     resetPlayback();
 
     const bookData = await readFileAsArrayBuffer(file);
@@ -1468,6 +1513,9 @@ export function useReaderController() {
     pageLabel,
     completion,
     audioSrc,
+    timelineOptions,
+    selectedTimelineUrl,
+    isSwitchingTimeline,
     isPlaying,
     currentTime,
     duration,
@@ -1481,6 +1529,7 @@ export function useReaderController() {
     turnPage,
     togglePlayback,
     handleScrub,
+    switchTimelineSource,
     handleInputChange,
     handleDrop,
     openFilePicker,

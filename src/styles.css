@@ -470,6 +470,25 @@ svg {
   border-color: rgba(255, 240, 224, 0.12);
 }
 
+.reader-settings-group {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.reader-settings-group-label {
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.timeline-options-list {
+  display: grid;
+  gap: 10px;
+}
+
 .reader-titlebar.visible,
 .reader-progress.visible,
 .reader-ui-visible .reader-titlebar,
@@ -557,6 +576,11 @@ svg {
 
 .reader-screen.dark-mode .settings-toggle-state {
   background: rgba(255, 240, 224, 0.1);
+}
+
+.reader-screen.dark-mode .reader-settings-group-label,
+.reader-screen.dark-mode .settings-toggle-copy span {
+  color: rgba(243, 234, 223, 0.66);
 }
 
 .icon-button {
