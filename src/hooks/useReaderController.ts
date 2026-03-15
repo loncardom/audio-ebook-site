@@ -785,9 +785,11 @@ export function useReaderController() {
         setShowReaderUi(true);
         navigate("/reader");
 
+        const initialTimelineUrl = assets.timelineOptions[0]?.timelineUrl ?? assets.timelineUrl;
+
         const [bookData, timeline] = await Promise.all([
           fetchArrayBuffer(assets.epubUrl),
-          assets.timelineUrl ? fetchTimeline(assets.timelineUrl) : Promise.resolve([])
+          initialTimelineUrl ? fetchTimeline(initialTimelineUrl) : Promise.resolve([])
         ]);
 
         if (!appActiveRef.current) {
@@ -802,7 +804,7 @@ export function useReaderController() {
         });
         setTimelineEntries(timeline);
         setTimelineOptions(assets.timelineOptions);
-        setSelectedTimelineUrl(assets.timelineUrl);
+        setSelectedTimelineUrl(initialTimelineUrl);
         setAudioSrc(assets.audioUrl);
         if (!viewerRef.current) {
           debugLog("autoboot:no-viewer");
