@@ -24,6 +24,7 @@ type ReaderViewProps = Pick<
   | "closeReader"
   | "completion"
   | "currentTime"
+  | "debugUnmatchedWordsEnabled"
   | "duration"
   | "errorMessage"
   | "handleScrub"
@@ -44,12 +45,14 @@ type ReaderViewProps = Pick<
   | "syncActiveWord"
   | "togglePlayback"
   | "toggleDarkMode"
+  | "toggleDebugUnmatchedWords"
   | "turnPage"
 >;
 
 export function ReaderView(props: ReaderViewProps) {
   const shellRef = useRef<HTMLElement | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [showSettingsPanel, setShowSettingsPanel] = useState(false);
   const {
     audioRef,
     audioSrc,
@@ -60,6 +63,7 @@ export function ReaderView(props: ReaderViewProps) {
     closeReader,
     completion,
     currentTime,
+    debugUnmatchedWordsEnabled,
     duration,
     errorMessage,
     handleScrub,
@@ -80,6 +84,7 @@ export function ReaderView(props: ReaderViewProps) {
     syncActiveWord,
     togglePlayback,
     toggleDarkMode,
+    toggleDebugUnmatchedWords,
     turnPage
   } = props;
 
@@ -189,7 +194,11 @@ export function ReaderView(props: ReaderViewProps) {
             >
               <MoonIcon />
             </IconButton>
-            <IconButton label="Open settings">
+            <IconButton
+              label="Open settings"
+              active={showSettingsPanel}
+              onClick={() => setShowSettingsPanel((current) => !current)}
+            >
               <SettingsIcon />
             </IconButton>
             <IconButton
@@ -200,6 +209,26 @@ export function ReaderView(props: ReaderViewProps) {
               <ExpandIcon />
             </IconButton>
           </div>
+
+          {showSettingsPanel ? (
+            <div className="reader-settings-panel" role="dialog" aria-label="Reader settings">
+              <button
+                type="button"
+                className={`settings-toggle-card ${debugUnmatchedWordsEnabled ? "active" : ""}`}
+                onClick={toggleDebugUnmatchedWords}
+              >
+                <span className="settings-toggle-copy">
+                  <strong>Show unmatched words</strong>
+                  <span>
+                    Highlight words in red when no exact timeline locator exists for them.
+                  </span>
+                </span>
+                <span className="settings-toggle-state">
+                  {debugUnmatchedWordsEnabled ? "On" : "Off"}
+                </span>
+              </button>
+            </div>
+          ) : null}
         </div>
 
         <div className="reader-stage">

@@ -22,6 +22,7 @@ import {
 type ReaderStatus = "idle" | "loading" | "ready" | "error";
 type RoutePath = "/" | "/reader";
 const SPREAD_BREAKPOINT_PX = 800;
+const DEBUG_UNMATCHED_WORDS_KEY = "reader:debug-unmatched-words";
 type ThemePreference = "system" | "light" | "dark";
 type BookMetadata = {
   title: string | null;
@@ -78,6 +79,13 @@ export function useReaderController() {
     return window.matchMedia("(prefers-color-scheme: dark)").matches;
   });
   const [themePreference, setThemePreference] = useState<ThemePreference>("system");
+  const [debugUnmatchedWordsEnabled, setDebugUnmatchedWordsEnabled] = useState(() => {
+    try {
+      return window.localStorage.getItem(DEBUG_UNMATCHED_WORDS_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
 
   const isDarkMode = themePreference === "system" ? systemPrefersDark : themePreference === "dark";
 
@@ -196,6 +204,10 @@ export function useReaderController() {
     const highlightShadow = darkMode
       ? "0 0 0 0.12em rgba(255, 176, 103, 0.16)"
       : "0 0 0 0.12em rgba(255, 159, 67, 0.18)";
+    const unmatchedBackground = darkMode
+      ? "rgba(244, 63, 94, 0.28)"
+      : "rgba(239, 68, 68, 0.18)";
+    const unmatchedColor = darkMode ? "#ffd7dd" : "#7f1321";
 
     renditionRef.current.themes.default({
       body: {
@@ -212,6 +224,11 @@ export function useReaderController() {
         color: highlightColor,
         "border-radius": "0.22em",
         "box-shadow": highlightShadow
+      },
+      ".timeline-unmatched-debug": {
+        "background-color": unmatchedBackground,
+        color: unmatchedColor,
+        "border-radius": "0.18em"
       }
     });
 
@@ -311,6 +328,121 @@ export function useReaderController() {
     activeHighlightElementRef.current = null;
   }
 
+  function clearUnmatchedDebugMarks(doc?: Document) {
+    const currentRendition = renditionRef.current as
+      | (Rendition & {
+          getContents?: () => Array<{ document?: Document }>;
+        })
+      | null;
+
+    const docs: Document[] = doc
+      ? [doc]
+      : currentRendition
+        ? (currentRendition.getContents?.() ?? [])
+            .map((contents) => contents.document)
+            .filter((candidate): candidate is Document => Boolean(candidate))
+        : [];
+
+    for (const currentDoc of docs) {
+      for (const marker of Array.from(currentDoc.querySelectorAll(".timeline-unmatched-debug"))) {
+        const parent = marker.parentNode;
+        if (!parent) {
+          continue;
+        }
+
+        while (marker.firstChild) {
+          parent.insertBefore(marker.firstChild, marker);
+        }
+        parent.removeChild(marker);
+        parent.normalize();
+      }
+    }
+  }
+
+  function applyUnmatchedDebugMarks(doc: Document) {
+    const href = normalizeHref(
+      doc.querySelector("link[rel='canonical']")?.getAttribute("href") ??
+        doc.location?.pathname ??
+        location?.start.href ??
+        null
+    );
+    if (!href) {
+      return;
+    }
+
+    const textNodes: Array<{
+      textNode: Text;
+      parentElement: Element;
+      ranges: Array<{ start: number; end: number }>;
+    }> = [];
+
+    const walker = doc.createTreeWalker(doc.body ?? doc.documentElement, NodeFilter.SHOW_TEXT);
+    const wordPattern = /\S+/g;
+
+    while (walker.nextNode()) {
+      const textNode = walker.currentNode as Text;
+      const parentElement = textNode.parentElement;
+      const text = textNode.textContent ?? "";
+      if (!parentElement || !text.trim()) {
+        continue;
+      }
+
+      if (
+        parentElement.closest(
+          "a[href], .sync-word-highlight-dom, .timeline-unmatched-debug, script, style"
+        )
+      ) {
+        continue;
+      }
+
+      const path = buildElementPath(parentElement, doc);
+      const unmatchedRanges: Array<{ start: number; end: number }> = [];
+      wordPattern.lastIndex = 0;
+      let match: RegExpExecArray | null;
+
+      while ((match = wordPattern.exec(text)) !== null) {
+        const wordIndex = wordIndexWithinElement(parentElement, textNode, match.index);
+        const exactEntry = timelineLookupRef.current.get(
+          timelineLookupKey(href, path, wordIndex)
+        );
+        if (!exactEntry) {
+          unmatchedRanges.push({
+            start: match.index,
+            end: match.index + match[0].length
+          });
+        }
+      }
+
+      if (unmatchedRanges.length) {
+        textNodes.push({ textNode, parentElement, ranges: unmatchedRanges });
+      }
+    }
+
+    for (const entry of textNodes) {
+      const originalText = entry.textNode.textContent ?? "";
+      const fragment = doc.createDocumentFragment();
+      let cursor = 0;
+
+      for (const range of entry.ranges) {
+        if (range.start > cursor) {
+          fragment.append(doc.createTextNode(originalText.slice(cursor, range.start)));
+        }
+
+        const marker = doc.createElement("span");
+        marker.className = "timeline-unmatched-debug";
+        marker.textContent = originalText.slice(range.start, range.end);
+        fragment.append(marker);
+        cursor = range.end;
+      }
+
+      if (cursor < originalText.length) {
+        fragment.append(doc.createTextNode(originalText.slice(cursor)));
+      }
+
+      entry.textNode.parentNode?.replaceChild(fragment, entry.textNode);
+    }
+  }
+
   function applyDomHighlight(ref: string): boolean {
     const parsed = parseTimelineRef(ref);
     if (!parsed.href || !parsed.path || parsed.wordIndex === null || !renditionRef.current) {
@@ -406,7 +538,7 @@ export function useReaderController() {
     return false;
   }
 
-  function syncActiveWord(time: number) {
+  function syncActiveWord(time: number): number | null {
     const nextIndex = findTimelineIndexAtTime(
       timelineEntries,
       time,
@@ -414,11 +546,12 @@ export function useReaderController() {
     );
 
     if (nextIndex === activeWordIndexRef.current) {
-      return;
+      return nextIndex;
     }
 
     activeWordIndexRef.current = nextIndex;
     setActiveWordIndex(nextIndex);
+    return nextIndex;
   }
 
   useEffect(() => {
@@ -458,6 +591,17 @@ export function useReaderController() {
     timelinePathGroupsRef.current = nextPathGroups;
     timelineHrefGroupsRef.current = nextHrefGroups;
   }, [timelineEntries]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        DEBUG_UNMATCHED_WORDS_KEY,
+        debugUnmatchedWordsEnabled ? "1" : "0"
+      );
+    } catch {
+      // Ignore storage failures and keep the in-memory preference.
+    }
+  }, [debugUnmatchedWordsEnabled]);
 
   useEffect(() => {
     statusRef.current = status;
@@ -644,6 +788,7 @@ export function useReaderController() {
 
   useEffect(() => {
     if (status !== "ready" || !renditionRef.current) {
+      clearUnmatchedDebugMarks();
       clearActiveHighlight();
       return;
     }
@@ -682,6 +827,33 @@ export function useReaderController() {
       });
     }
   }, [activeWordIndex, location?.start.href, status, timelineEntries]);
+
+  useEffect(() => {
+    const currentRendition = renditionRef.current as
+      | (Rendition & {
+          getContents?: () => Array<{ document?: Document }>;
+        })
+      | null;
+    const contentsList = currentRendition?.getContents?.() ?? [];
+
+    for (const contents of contentsList) {
+      const doc = contents.document;
+      if (!doc) {
+        continue;
+      }
+
+      clearUnmatchedDebugMarks(doc);
+      if (status === "ready" && debugUnmatchedWordsEnabled && timelineEntries.length) {
+        applyUnmatchedDebugMarks(doc);
+      }
+    }
+  }, [
+    debugUnmatchedWordsEnabled,
+    location?.start.href,
+    renderVersion,
+    status,
+    timelineEntries
+  ]);
 
   function navigate(path: RoutePath) {
     if (window.location.pathname !== path) {
@@ -909,7 +1081,135 @@ export function useReaderController() {
 
     audioRef.current.currentTime = nextValue;
     setCurrentTime(nextValue);
-    syncActiveWord(nextValue);
+    const nextIndex = syncActiveWord(nextValue);
+    if (nextIndex !== null) {
+      navigateToTimelineEntry(timelineEntries[nextIndex]);
+    }
+  }
+
+  function rangeForTimelineRef(ref: string): Range | null {
+    const parsed = parseTimelineRef(ref);
+    if (!parsed.href || !parsed.path || !renditionRef.current) {
+      return null;
+    }
+
+    const contentsList = (
+      renditionRef.current as Rendition & {
+        getContents?: () => Array<{
+          document?: Document;
+          cfiFromRange?: (range: Range) => string;
+        }>;
+      }
+    ).getContents?.() ?? [];
+
+    const matchingContents = contentsList.find((contents) => {
+      const currentHref = normalizeHref(
+        contents.document?.querySelector("link[rel='canonical']")?.getAttribute("href") ??
+          contents.document?.location?.pathname ??
+          null
+      );
+      return hrefMatches(currentHref, parsed.href);
+    });
+
+    const doc = matchingContents?.document;
+    if (!doc) {
+      return null;
+    }
+
+    let targetElement: Element | null = null;
+    try {
+      targetElement = doc.querySelector(parsed.path);
+    } catch {
+      return null;
+    }
+
+    if (!targetElement) {
+      return null;
+    }
+
+    if (parsed.wordIndex === null) {
+      const range = doc.createRange();
+      range.selectNodeContents(targetElement);
+      return range;
+    }
+
+    const walker = doc.createTreeWalker(targetElement, NodeFilter.SHOW_TEXT);
+    const wordPattern = /\S+/g;
+    let seenWords = 0;
+
+    while (walker.nextNode()) {
+      const textNode = walker.currentNode as Text;
+      const text = textNode.textContent ?? "";
+      wordPattern.lastIndex = 0;
+      let match: RegExpExecArray | null;
+
+      while ((match = wordPattern.exec(text)) !== null) {
+        if (seenWords === parsed.wordIndex) {
+          const range = doc.createRange();
+          range.setStart(textNode, match.index);
+          range.setEnd(textNode, match.index + match[0].length);
+          return range;
+        }
+
+        seenWords += 1;
+      }
+    }
+
+    const fallbackRange = doc.createRange();
+    fallbackRange.selectNodeContents(targetElement);
+    return fallbackRange;
+  }
+
+  function navigateToTimelineEntry(entry: TimelineEntry | undefined) {
+    if (!entry?.cfi || !renditionRef.current) {
+      return;
+    }
+
+    const parsed = parseTimelineRef(entry.cfi);
+    const activeHref = parsed.href ?? extractHrefFromLocator(entry.cfi);
+    if (!activeHref) {
+      return;
+    }
+
+    const contentsList = (
+      renditionRef.current as Rendition & {
+        getContents?: () => Array<{
+          document?: Document;
+          cfiFromRange?: (range: Range) => string;
+        }>;
+      }
+    ).getContents?.() ?? [];
+
+    const matchingContents = contentsList.find((contents) => {
+      const currentHref = normalizeHref(
+        contents.document?.querySelector("link[rel='canonical']")?.getAttribute("href") ??
+          contents.document?.location?.pathname ??
+          null
+      );
+      return hrefMatches(currentHref, activeHref);
+    });
+
+    const targetRange = rangeForTimelineRef(entry.cfi);
+    const targetCfi =
+      targetRange && matchingContents?.cfiFromRange
+        ? matchingContents.cfiFromRange(targetRange)
+        : null;
+
+    followedHrefRef.current = activeHref;
+    debugLog("scrub:navigate", {
+      activeHref,
+      hasRange: Boolean(targetRange),
+      hasCfi: Boolean(targetCfi)
+    });
+
+    if (targetCfi) {
+      void renditionRef.current.display(targetCfi).catch(() => {
+        void renditionRef.current?.display(activeHref).catch(() => undefined);
+      });
+      return;
+    }
+
+    void renditionRef.current.display(activeHref).catch(() => undefined);
   }
 
   function findNearestEntryForPath(
@@ -1134,6 +1434,10 @@ export function useReaderController() {
     });
   }
 
+  function toggleDebugUnmatchedWords() {
+    setDebugUnmatchedWordsEnabled((current) => !current);
+  }
+
   const ready = status === "ready";
   const pageLabel = pageNumberLabel(location, totalLocations, currentLocationIndex);
   const completion =
@@ -1169,6 +1473,7 @@ export function useReaderController() {
     duration,
     playerTimeLabel,
     isDarkMode,
+    debugUnmatchedWordsEnabled,
     inputRef,
     audioRef,
     handleViewerRef,
@@ -1180,6 +1485,7 @@ export function useReaderController() {
     handleDrop,
     openFilePicker,
     toggleDarkMode,
+    toggleDebugUnmatchedWords,
     setIsDragging,
     setShowReaderUi,
     syncActiveWord,

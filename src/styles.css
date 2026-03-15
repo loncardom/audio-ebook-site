@@ -448,8 +448,26 @@ svg {
   transform: translateY(-6px);
 }
 
+.reader-settings-panel {
+  position: absolute;
+  top: calc(100% + 12px);
+  right: 20px;
+  width: min(320px, calc(100vw - 40px));
+  padding: 14px;
+  border-radius: 20px;
+  border: 1px solid var(--line);
+  background: rgba(255, 251, 246, 0.96);
+  box-shadow: var(--shadow-soft);
+  backdrop-filter: blur(14px);
+}
+
 .reader-screen.dark-mode .reader-titlebar {
   color: #f3eadf;
+}
+
+.reader-screen.dark-mode .reader-settings-panel {
+  background: rgba(27, 22, 18, 0.94);
+  border-color: rgba(255, 240, 224, 0.12);
 }
 
 .reader-titlebar.visible,
@@ -469,6 +487,76 @@ svg {
 
 .reader-toolbar-right {
   justify-content: flex-end;
+}
+
+.settings-toggle-card {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  text-align: left;
+  padding: 14px 16px;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.72);
+  color: inherit;
+  cursor: pointer;
+  transition:
+    border-color 160ms ease,
+    background-color 160ms ease,
+    transform 160ms ease;
+}
+
+.settings-toggle-card:hover {
+  transform: translateY(-1px);
+  border-color: rgba(235, 109, 29, 0.34);
+}
+
+.settings-toggle-card.active {
+  border-color: rgba(239, 68, 68, 0.42);
+  background: rgba(255, 235, 238, 0.88);
+}
+
+.reader-screen.dark-mode .settings-toggle-card {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 240, 224, 0.12);
+}
+
+.reader-screen.dark-mode .settings-toggle-card.active {
+  background: rgba(127, 29, 29, 0.32);
+  border-color: rgba(248, 113, 113, 0.4);
+}
+
+.settings-toggle-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.settings-toggle-copy strong {
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+
+.settings-toggle-copy span {
+  font-size: 0.86rem;
+  color: var(--muted);
+}
+
+.settings-toggle-state {
+  flex: 0 0 auto;
+  min-width: 44px;
+  text-align: center;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(35, 26, 18, 0.08);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.reader-screen.dark-mode .settings-toggle-state {
+  background: rgba(255, 240, 224, 0.1);
 }
 
 .icon-button {
