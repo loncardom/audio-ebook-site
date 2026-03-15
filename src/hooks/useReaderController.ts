@@ -35,6 +35,14 @@ type BookMetadata = {
   coverUrl: string | null;
 };
 
+function normalizePathForLookup(path: string | null): string | null {
+  if (!path) {
+    return null;
+  }
+
+  return path.replace(/:nth-of-type\(1\)/g, "");
+}
+
 export function useReaderController() {
   const viewerRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -50,6 +58,9 @@ export function useReaderController() {
   const activeWordIndexRef = useRef<number | null>(null);
   const timelineLookupRef = useRef<Map<string, TimelineEntry>>(new Map());
   const timelinePathGroupsRef = useRef<Map<string, TimelineEntry[]>>(new Map());
+  const timelinePathCoverageRef = useRef<Map<string, Set<number>>>(new Map());
+  const timelineNormalizedPathGroupsRef = useRef<Map<string, TimelineEntry[]>>(new Map());
+  const timelineNormalizedPathCoverageRef = useRef<Map<string, Set<number>>>(new Map());
   const timelineHrefGroupsRef = useRef<Map<string, TimelineEntry[]>>(new Map());
   const spreadLayoutRef = useRef(false);
 
@@ -433,17 +444,29 @@ export function useReaderController() {
         continue;
       }
 
-      const path = buildElementPath(parentElement, doc);
+      const pathContext = findClosestTimelinePathContext(href, parentElement, doc);
+      const matchedElement = pathContext?.element ?? null;
+      const path = pathContext?.path ?? null;
+      const coverage = pathContext?.coverage ?? null;
+
+      if (!matchedElement || !path || !coverage) {
+        continue;
+      }
+
       const unmatchedRanges: Array<{ start: number; end: number }> = [];
       wordPattern.lastIndex = 0;
       let match: RegExpExecArray | null;
 
       while ((match = wordPattern.exec(text)) !== null) {
-        const wordIndex = wordIndexWithinElement(parentElement, textNode, match.index);
+        const wordIndex = wordIndexWithinElement(matchedElement, textNode, match.index);
+        if (wordIndex === null) {
+          continue;
+        }
+
         const exactEntry = timelineLookupRef.current.get(
           timelineLookupKey(href, path, wordIndex)
         );
-        if (!exactEntry) {
+        if (!exactEntry && !coverage.has(wordIndex)) {
           unmatchedRanges.push({
             start: match.index,
             end: match.index + match[0].length
@@ -595,6 +618,9 @@ export function useReaderController() {
   useEffect(() => {
     const nextLookup = new Map<string, TimelineEntry>();
     const nextPathGroups = new Map<string, TimelineEntry[]>();
+    const nextPathCoverage = new Map<string, Set<number>>();
+    const nextNormalizedPathGroups = new Map<string, TimelineEntry[]>();
+    const nextNormalizedPathCoverage = new Map<string, Set<number>>();
     const nextHrefGroups = new Map<string, TimelineEntry[]>();
 
     for (const entry of timelineEntries) {
@@ -605,6 +631,26 @@ export function useReaderController() {
       const pathEntries = nextPathGroups.get(pathKey) ?? [];
       pathEntries.push(entry);
       nextPathGroups.set(pathKey, pathEntries);
+
+      const normalizedPathKey = timelineLookupKey(
+        parsed.href,
+        normalizePathForLookup(parsed.path),
+        null
+      );
+      const normalizedPathEntries = nextNormalizedPathGroups.get(normalizedPathKey) ?? [];
+      normalizedPathEntries.push(entry);
+      nextNormalizedPathGroups.set(normalizedPathKey, normalizedPathEntries);
+
+      if (parsed.wordIndex !== null) {
+        const pathCoverage = nextPathCoverage.get(pathKey) ?? new Set<number>();
+        pathCoverage.add(parsed.wordIndex);
+        nextPathCoverage.set(pathKey, pathCoverage);
+
+        const normalizedPathCoverage =
+          nextNormalizedPathCoverage.get(normalizedPathKey) ?? new Set<number>();
+        normalizedPathCoverage.add(parsed.wordIndex);
+        nextNormalizedPathCoverage.set(normalizedPathKey, normalizedPathCoverage);
+      }
 
       if (parsed.href) {
         const hrefEntries = nextHrefGroups.get(parsed.href) ?? [];
@@ -625,8 +671,19 @@ export function useReaderController() {
       entries.sort((a, b) => a.start - b.start);
     }
 
+    for (const entries of nextNormalizedPathGroups.values()) {
+      entries.sort((a, b) => {
+        const parsedA = parseTimelineRef(a.cfi);
+        const parsedB = parseTimelineRef(b.cfi);
+        return (parsedA.wordIndex ?? 0) - (parsedB.wordIndex ?? 0);
+      });
+    }
+
     timelineLookupRef.current = nextLookup;
     timelinePathGroupsRef.current = nextPathGroups;
+    timelinePathCoverageRef.current = nextPathCoverage;
+    timelineNormalizedPathGroupsRef.current = nextNormalizedPathGroups;
+    timelineNormalizedPathCoverageRef.current = nextNormalizedPathCoverage;
     timelineHrefGroupsRef.current = nextHrefGroups;
   }, [timelineEntries]);
 
@@ -1293,6 +1350,120 @@ export function useReaderController() {
     return best;
   }
 
+  function findNearestEntryForNormalizedPath(
+    href: string | null,
+    normalizedPath: string,
+    wordIndex: number | null
+  ): TimelineEntry | null {
+    if (!href) {
+      return null;
+    }
+
+    const entries = timelineNormalizedPathGroupsRef.current.get(
+      timelineLookupKey(href, normalizedPath, null)
+    );
+
+    if (!entries?.length) {
+      return null;
+    }
+
+    if (wordIndex === null) {
+      return entries[0];
+    }
+
+    let best = entries[0];
+    let bestDistance = Math.abs((parseTimelineRef(best.cfi).wordIndex ?? 0) - wordIndex);
+
+    for (const entry of entries) {
+      const candidateIndex = parseTimelineRef(entry.cfi).wordIndex ?? 0;
+      const distance = Math.abs(candidateIndex - wordIndex);
+      if (distance < bestDistance) {
+        best = entry;
+        bestDistance = distance;
+      }
+    }
+
+    return best;
+  }
+
+  function scorePathSuffixSimilarity(livePath: string, exportedPath: string): number {
+    const liveSegments = livePath.split(" > ");
+    const exportedSegments = exportedPath.split(" > ");
+    let score = 0;
+    let liveIndex = liveSegments.length - 1;
+    let exportedIndex = exportedSegments.length - 1;
+
+    while (liveIndex >= 0 && exportedIndex >= 0) {
+      if (liveSegments[liveIndex] === exportedSegments[exportedIndex]) {
+        score += 4;
+        liveIndex -= 1;
+        exportedIndex -= 1;
+        continue;
+      }
+
+      const liveTag = liveSegments[liveIndex].split(":")[0];
+      const exportedTag = exportedSegments[exportedIndex].split(":")[0];
+      if (liveTag === exportedTag) {
+        score += 1;
+      }
+      break;
+    }
+
+    return score;
+  }
+
+  function findNearestEntryForLivePath(
+    href: string | null,
+    livePath: string,
+    wordIndex: number | null
+  ): { entry: TimelineEntry; path: string; score: number } | null {
+    if (!href) {
+      return null;
+    }
+
+    let bestMatch: { entry: TimelineEntry; path: string; score: number } | null = null;
+    let bestDistance = Number.POSITIVE_INFINITY;
+
+    for (const [key, entries] of timelinePathGroupsRef.current.entries()) {
+      if (!entries.length) {
+        continue;
+      }
+
+      const parsed = parseTimelineRef(entries[0].cfi);
+      if (parsed.href !== href || !parsed.path) {
+        continue;
+      }
+
+      const score = scorePathSuffixSimilarity(livePath, parsed.path);
+      if (score <= 0) {
+        continue;
+      }
+
+      const entry = findNearestEntryForPath(href, parsed.path, wordIndex);
+      if (!entry) {
+        continue;
+      }
+
+      const candidateIndex = parseTimelineRef(entry.cfi).wordIndex ?? 0;
+      const distance = wordIndex === null ? 0 : Math.abs(candidateIndex - wordIndex);
+
+      if (
+        !bestMatch ||
+        score > bestMatch.score ||
+        (score === bestMatch.score && distance < bestDistance)
+      ) {
+        bestMatch = {
+          entry,
+          path: parsed.path,
+          score
+        };
+        bestDistance = distance;
+      }
+    }
+
+    return bestMatch;
+  }
+
   function findNearestEntryForHref(href: string | null): TimelineEntry | null {
     if (!href) {
       return null;
@@ -1300,6 +1471,53 @@ export function useReaderController() {
 
     const entries = timelineHrefGroupsRef.current.get(href);
     return entries?.[0] ?? null;
+  }
+
+  function findClosestTimelinePathContext(
+    href: string | null,
+    element: Element | null,
+    doc: Document
+  ): { element: Element; path: string; coverage: Set<number> } | null {
+    let currentElement = element;
+
+    while (currentElement && currentElement !== doc.body.parentElement) {
+      const candidatePath = buildElementPath(currentElement, doc);
+      const candidateCoverage = timelinePathCoverageRef.current.get(
+        timelineLookupKey(href, candidatePath, null)
+      );
+
+      if (candidateCoverage?.size) {
+        return {
+          element: currentElement,
+          path: candidatePath,
+          coverage: candidateCoverage
+        };
+      }
+
+      const normalizedCandidatePath = normalizePathForLookup(candidatePath);
+      const normalizedCoverage = timelineNormalizedPathCoverageRef.current.get(
+        timelineLookupKey(href, normalizedCandidatePath, null)
+      );
+      const normalizedEntry =
+        normalizedCandidatePath !== candidatePath
+          ? findNearestEntryForNormalizedPath(href, normalizedCandidatePath ?? "", null)
+          : null;
+
+      if (normalizedCoverage?.size && normalizedEntry) {
+        const exportedPath = parseTimelineRef(normalizedEntry.cfi).path;
+        if (exportedPath) {
+          return {
+            element: currentElement,
+            path: exportedPath,
+            coverage: normalizedCoverage
+          };
+        }
+      }
+
+      currentElement = currentElement.parentElement;
+    }
+
+    return null;
   }
 
   useEffect(() => {
@@ -1369,19 +1587,23 @@ export function useReaderController() {
             textSample: position.node.textContent?.slice(0, 80) ?? ""
           });
 
-          let currentElement: Element | null = position.node.parentElement;
-          while (currentElement && currentElement !== doc.body.parentElement) {
-            const path = buildElementPath(currentElement, doc);
-            const wordIndex = wordIndexWithinElement(currentElement, position.node, position.offset);
-            const exactEntry = timelineLookupRef.current.get(
-              timelineLookupKey(href, path, wordIndex)
+          const pathContext = findClosestTimelinePathContext(href, position.node.parentElement, doc);
+          if (pathContext) {
+            const wordIndex = wordIndexWithinElement(
+              pathContext.element,
+              position.node,
+              position.offset
             );
-            const nearestPathEntry = exactEntry ?? findNearestEntryForPath(href, path, wordIndex);
+            const exactEntry = timelineLookupRef.current.get(
+              timelineLookupKey(href, pathContext.path, wordIndex)
+            );
+            const nearestPathEntry =
+              exactEntry ?? findNearestEntryForPath(href, pathContext.path, wordIndex);
 
             if (nearestPathEntry) {
               debugLog("word-click:seek", {
                 href,
-                path,
+                path: pathContext.path,
                 wordIndex,
                 start: nearestPathEntry.start,
                 word: nearestPathEntry.word,
@@ -1393,14 +1615,36 @@ export function useReaderController() {
               return;
             }
 
-            debugLog("word-click:miss", {
+            debugLog("word-click:path-context-miss", {
               href,
-              path,
-              wordIndex,
-              tag: currentElement.tagName
+              path: pathContext.path,
+              wordIndex
             });
+          }
 
-            currentElement = currentElement.parentElement;
+          const livePath = position.node.parentElement
+            ? buildElementPath(position.node.parentElement, doc)
+            : null;
+          const liveWordIndex = position.node.parentElement
+            ? wordIndexWithinElement(position.node.parentElement, position.node, position.offset)
+            : null;
+          const fuzzyPathMatch = livePath
+            ? findNearestEntryForLivePath(href, livePath, liveWordIndex)
+            : null;
+          if (fuzzyPathMatch) {
+            debugLog("word-click:seek-fuzzy-path", {
+              href,
+              livePath,
+              matchedPath: fuzzyPathMatch.path,
+              liveWordIndex,
+              start: fuzzyPathMatch.entry.start,
+              word: fuzzyPathMatch.entry.word,
+              score: fuzzyPathMatch.score
+            });
+            event.preventDefault();
+            setShowReaderUi(true);
+            handleScrub(fuzzyPathMatch.entry.start);
+            return;
           }
 
           const hrefFallback = findNearestEntryForHref(href);
