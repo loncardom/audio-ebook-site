@@ -3,31 +3,27 @@ import { BookIcon, UploadIcon } from "./icons";
 
 type LandingViewProps = Pick<
   ReaderController,
-  | "bookAuthor"
-  | "bookCoverUrl"
-  | "bookDescription"
-  | "bookTitle"
   | "inputRef"
   | "isDragging"
   | "landingNotice"
   | "handleInputChange"
   | "handleDrop"
+  | "loadSampleBook"
   | "openFilePicker"
+  | "sampleBooks"
   | "setIsDragging"
 >;
 
 export function LandingView(props: LandingViewProps) {
   const {
-    bookAuthor,
-    bookCoverUrl,
-    bookDescription,
-    bookTitle,
     inputRef,
     isDragging,
     landingNotice,
     handleInputChange,
     handleDrop,
+    loadSampleBook,
     openFilePicker,
+    sampleBooks,
     setIsDragging
   } = props;
 
@@ -42,38 +38,32 @@ export function LandingView(props: LandingViewProps) {
               <BookIcon />
             </div>
             <div>
-              <p className="brand-name">Audio ePub Reader</p>
-              <span className="brand-subtitle">Local-first EPUB reader shell</span>
+              <p className="brand-name">Audio EPUB Reader</p>
+              <span className="brand-subtitle">Syncronize audiobooks with EPUBs</span>
             </div>
-          </div>
-
-          <div className="landing-pills">
-            <span className="landing-pill">Privacy-first</span>
-            <span className="landing-pill">EPUB only</span>
           </div>
         </header>
 
         <section className="landing-hero">
           <div className="landing-copy">
-            <span className="section-tag">Reading Platform</span>
-            <h1>Make this reader feel much closer to the reference app.</h1>
+            <h1>Load a book, its audiobook, and the sync map together.</h1>
             <p className="landing-lede">
-              Upload a local EPUB, open it in a full-screen reading view, and keep
-              the interaction model centered on clean page turns and ambient controls.
+              Upload all three files to open a synchronized reading session with
+              playback, scrubbing, and word highlighting.
             </p>
 
             <div className="landing-stats">
               <div className="stat-card">
-                <strong>Paginated</strong>
-                <span>epub.js flow with keyboard navigation</span>
+                <strong>EPUB</strong>
+                <span>The source text for the reader</span>
               </div>
               <div className="stat-card">
-                <strong>Auto sample load</strong>
-                <span>dev mode can boot a sibling workspace EPUB automatically</span>
+                <strong>MP3</strong>
+                <span>The audiobook audio track</span>
               </div>
               <div className="stat-card">
-                <strong>Audio sync</strong>
-                <span>play the first chunk and highlight spoken words</span>
+                <strong>JSON</strong>
+                <span>The word-to-text sync table</span>
               </div>
             </div>
           </div>
@@ -91,34 +81,20 @@ export function LandingView(props: LandingViewProps) {
               ref={inputRef}
               className="sr-only"
               type="file"
-              accept=".epub,application/epub+zip"
+              multiple
+              accept=".epub,.mp3,.json,application/epub+zip,audio/mpeg,application/json"
               onChange={handleInputChange}
             />
 
             <div className="upload-icon-wrap">
               <UploadIcon />
             </div>
-            <span className="upload-badge">Upload ePub Book</span>
-            <strong>Drag and drop an EPUB here</strong>
+            <span className="upload-badge">Upload 3 Files</span>
+            <strong>Drag and drop an EPUB, MP3, and JSON file here</strong>
             <p>
-              The file stays on this machine. Open it directly into the redesigned
-              reader interface.
+              The upload set must include exactly what the reader needs: the book,
+              its audio, and the sync table that maps them together.
             </p>
-
-            {bookCoverUrl || (bookTitle && bookTitle !== "No book loaded") ? (
-              <div className="book-preview">
-                {bookCoverUrl ? (
-                  <img className="book-preview-cover" src={bookCoverUrl} alt="" aria-hidden="true" />
-                ) : null}
-                <div className="book-preview-copy">
-                  <strong>{bookTitle}</strong>
-                  {bookAuthor ? <span>{bookAuthor}</span> : null}
-                  {bookDescription ? (
-                    <p>{bookDescription.slice(0, 160)}{bookDescription.length > 160 ? "..." : ""}</p>
-                  ) : null}
-                </div>
-              </div>
-            ) : null}
 
             {landingNotice ? <p className="landing-notice">{landingNotice}</p> : null}
 
@@ -130,9 +106,36 @@ export function LandingView(props: LandingViewProps) {
                 openFilePicker();
               }}
             >
-              Choose EPUB
+              Choose Files
             </button>
           </label>
+        </section>
+
+        <section className="samples-section">
+          <div className="samples-header">
+            <h2>Samples</h2>
+            <p>Books from the local <code>samples/</code> directory with an EPUB, MP3, and JSON.</p>
+          </div>
+
+          {sampleBooks.length ? (
+            <div className="samples-grid">
+              {sampleBooks.map((sample) => (
+                <button
+                  key={sample.label}
+                  type="button"
+                  className="sample-card"
+                  onClick={() => void loadSampleBook(sample)}
+                >
+                  <strong>{sample.bookTitle}</strong>
+                  <span>{sample.timelineOptions[0]?.label ?? "book_timeline.json"}</span>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <p className="samples-empty">
+              No complete sample books were found in <code>samples/</code>.
+            </p>
+          )}
         </section>
       </section>
     </main>

@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState, type ChangeEvent, type DragEv
 import ePub, { Book, RelocatedLocation, Rendition } from "epubjs";
 import {
   isEpubFile,
+  resolveSampleBooks,
+  type SampleBookAssetSet,
   type TimelineOption
 } from "../lib/assets";
 import { debugLog } from "../lib/debug";
@@ -23,7 +25,6 @@ import {
   type TimelineEntry
 } from "../lib/timeline";
 import { useTimelineIndex } from "./useTimelineIndex";
-import { useAutoBootAssets } from "./useAutoBootAssets";
 
 type ReaderStatus = "idle" | "loading" | "ready" | "error";
 type RoutePath = "/" | "/reader";
@@ -37,10 +38,17 @@ type BookMetadata = {
   coverUrl: string | null;
 };
 
+type PendingUploadSet = {
+  epubFile: File;
+  audioFile: File;
+  timelineFile: File;
+};
+
 export function useReaderController() {
   const viewerRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const audioObjectUrlRef = useRef<string | null>(null);
   const bookRef = useRef<Book | null>(null);
   const renditionRef = useRef<Rendition | null>(null);
   const statusRef = useRef<ReaderStatus>("idle");
@@ -66,13 +74,15 @@ export function useReaderController() {
   const [location, setLocation] = useState<RelocatedLocation | null>(null);
   const [totalLocations, setTotalLocations] = useState(0);
   const [currentLocationIndex, setCurrentLocationIndex] = useState<number | null>(null);
-  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [pendingUploadSet, setPendingUploadSet] = useState<PendingUploadSet | null>(null);
+  const [pendingSampleBook, setPendingSampleBook] = useState<SampleBookAssetSet | null>(null);
   const [showReaderUi, setShowReaderUi] = useState(true);
   const [viewerMounted, setViewerMounted] = useState(false);
   const [audioSrc, setAudioSrc] = useState<string | null>(null);
   const [timelineEntries, setTimelineEntries] = useState<TimelineEntry[]>([]);
   const [timelineOptions, setTimelineOptions] = useState<TimelineOption[]>([]);
   const [selectedTimelineUrl, setSelectedTimelineUrl] = useState<string | null>(null);
+  const [sampleBooks, setSampleBooks] = useState<SampleBookAssetSet[]>([]);
   const [isSwitchingTimeline, setIsSwitchingTimeline] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -100,6 +110,13 @@ export function useReaderController() {
   } = useTimelineIndex(timelineEntries);
 
   const isDarkMode = themePreference === "system" ? systemPrefersDark : themePreference === "dark";
+
+  const revokeAudioObjectUrl = useCallback(() => {
+    if (audioObjectUrlRef.current) {
+      URL.revokeObjectURL(audioObjectUrlRef.current);
+      audioObjectUrlRef.current = null;
+    }
+  }, []);
 
   const applyBookMetadata = useCallback((metadata: BookMetadata) => {
     setBookTitle(metadata.title?.trim() || "Untitled book");
@@ -578,9 +595,10 @@ export function useReaderController() {
       if (audioRef.current) {
         audioRef.current.pause();
       }
+      revokeAudioObjectUrl();
       cleanupReader();
     };
-  }, []);
+  }, [revokeAudioObjectUrl]);
 
   useEffect(() => {
     const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
@@ -623,46 +641,34 @@ export function useReaderController() {
     applyReaderTheme(isDarkMode);
   }, [applyReaderTheme, isDarkMode, renderVersion]);
 
-  useAutoBootAssets({
-    enabled: import.meta.env.DEV,
-    appActiveRef,
-    onStart: (bookTitle) => {
-      setLandingNotice("");
-      setStatus("loading");
-      setBookTitle(bookTitle);
-      setShowReaderUi(true);
-      navigate("/reader");
-    },
-    onNoAssets: () => undefined,
-    onReady: ({ bookTitle, bookData, audioUrl, timelineEntries, timelineOptions, selectedTimelineUrl }) => {
-      setTimelineEntries(timelineEntries);
-      setTimelineOptions(timelineOptions);
-      setSelectedTimelineUrl(selectedTimelineUrl);
-      setAudioSrc(audioUrl);
-      if (!viewerRef.current) {
-        debugLog("autoboot:no-viewer");
-        throw new Error("Reader viewport was not mounted.");
+  useEffect(() => {
+    void resolveSampleBooks().then((books) => {
+      if (!appActiveRef.current) {
+        return;
       }
-      void loadBookFromBinary(bookData, `${bookTitle}.epub`);
-    },
-    onError: () => {
-      setStatus("idle");
-      setLandingNotice(
-        "Automatic sample loading was unavailable. You can still upload an EPUB manually."
-      );
-      navigate("/");
-    }
-  });
+      setSampleBooks(books);
+    });
+  }, []);
 
   useEffect(() => {
-    if (routePath !== "/reader" || !pendingFile || !viewerMounted) {
+    if (routePath !== "/reader" || !pendingUploadSet || !viewerMounted) {
       return;
     }
 
-    const nextFile = pendingFile;
-    setPendingFile(null);
-    void loadBookFromFile(nextFile);
-  }, [routePath, pendingFile, viewerMounted]);
+    const nextUploadSet = pendingUploadSet;
+    setPendingUploadSet(null);
+    void loadUploadedBundle(nextUploadSet);
+  }, [routePath, pendingUploadSet, viewerMounted]);
+
+  useEffect(() => {
+    if (routePath !== "/reader" || !pendingSampleBook || !viewerMounted) {
+      return;
+    }
+
+    const nextSampleBook = pendingSampleBook;
+    setPendingSampleBook(null);
+    void loadSampleBundle(nextSampleBook);
+  }, [routePath, pendingSampleBook, viewerMounted]);
 
   useEffect(() => {
     if (routePath !== "/reader" || status !== "ready") {
@@ -789,6 +795,7 @@ export function useReaderController() {
   }
 
   function resetPlayback() {
+    revokeAudioObjectUrl();
     if (audioRef.current) {
       audioRef.current.pause();
       audioRef.current.currentTime = 0;
@@ -806,7 +813,8 @@ export function useReaderController() {
   function closeReader() {
     cleanupReader();
     resetPlayback();
-    setPendingFile(null);
+    setPendingUploadSet(null);
+    setPendingSampleBook(null);
     setStatus("idle");
     setErrorMessage("");
     setTimelineEntries([]);
@@ -962,6 +970,63 @@ export function useReaderController() {
 
     const bookData = await readFileAsArrayBuffer(file);
     await loadBookFromBinary(bookData, file.name);
+  }
+
+  async function parseTimelineFile(file: File): Promise<TimelineEntry[]> {
+    const text = await file.text();
+    const payload = JSON.parse(text) as unknown;
+    if (!Array.isArray(payload)) {
+      throw new Error("Timeline JSON must be an array.");
+    }
+
+    return payload.filter(
+      (entry): entry is TimelineEntry =>
+        typeof entry === "object" &&
+        entry !== null &&
+        typeof (entry as Partial<TimelineEntry>).cfi === "string"
+    );
+  }
+
+  async function loadUploadedBundle(bundle: PendingUploadSet) {
+    resetPlayback();
+    setLandingNotice("");
+    setTimelineOptions([]);
+    setSelectedTimelineUrl(null);
+
+    const [bookData, uploadedTimeline] = await Promise.all([
+      readFileAsArrayBuffer(bundle.epubFile),
+      parseTimelineFile(bundle.timelineFile)
+    ]);
+
+    const nextAudioUrl = URL.createObjectURL(bundle.audioFile);
+    audioObjectUrlRef.current = nextAudioUrl;
+    setAudioSrc(nextAudioUrl);
+    setTimelineEntries(uploadedTimeline);
+
+    await loadBookFromBinary(bookData, bundle.epubFile.name);
+  }
+
+  async function loadSampleBundle(sample: SampleBookAssetSet) {
+    resetPlayback();
+    const selectedTimeline = sample.timelineOptions[0]?.timelineUrl ?? sample.timelineUrl;
+    const [bookData, sampleTimeline] = await Promise.all([
+      fetchArrayBuffer(sample.epubUrl),
+      selectedTimeline ? fetchTimeline(selectedTimeline) : Promise.resolve([])
+    ]);
+
+    setAudioSrc(sample.audioUrl);
+    setTimelineEntries(sampleTimeline);
+    setTimelineOptions(sample.timelineOptions);
+    setSelectedTimelineUrl(selectedTimeline);
+    await loadBookFromBinary(bookData, `${sample.bookTitle}.epub`);
+  }
+
+  async function loadSampleBook(sample: SampleBookAssetSet) {
+    setLandingNotice("");
+    setStatus("loading");
+    setShowReaderUi(true);
+    setPendingSampleBook(sample);
+    navigate("/reader");
   }
 
   async function turnPage(direction: "prev" | "next") {
@@ -1302,29 +1367,53 @@ export function useReaderController() {
     };
   }, [isSpreadLayout, location?.start.href, renderVersion, status, timelineEntries]);
 
+  function extractUploadSet(fileList: FileList | File[]) {
+    const files = Array.from(fileList);
+    const epubFile = files.find((file) => isEpubFile(file));
+    const audioFile = files.find((file) => file.name.toLowerCase().endsWith(".mp3"));
+    const timelineFile = files.find((file) => file.name.toLowerCase().endsWith(".json"));
+
+    if (!epubFile || !audioFile || !timelineFile) {
+      setLandingNotice("Please provide one .epub, one .mp3, and one .json file.");
+      return null;
+    }
+
+    return { epubFile, audioFile, timelineFile };
+  }
+
   function handleInputChange(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    if (!file) {
+    const files = event.target.files;
+    if (!files?.length) {
+      return;
+    }
+
+    const nextUploadSet = extractUploadSet(files);
+    event.target.value = "";
+    if (!nextUploadSet) {
       return;
     }
 
     setLandingNotice("");
-    setPendingFile(file);
+    setPendingUploadSet(nextUploadSet);
     navigate("/reader");
-    event.target.value = "";
   }
 
   function handleDrop(event: DragEvent<HTMLLabelElement>) {
     event.preventDefault();
     setIsDragging(false);
 
-    const file = event.dataTransfer.files?.[0];
-    if (!file) {
+    const files = event.dataTransfer.files;
+    if (!files?.length) {
+      return;
+    }
+
+    const nextUploadSet = extractUploadSet(files);
+    if (!nextUploadSet) {
       return;
     }
 
     setLandingNotice("");
-    setPendingFile(file);
+    setPendingUploadSet(nextUploadSet);
     navigate("/reader");
   }
 
@@ -1380,6 +1469,7 @@ export function useReaderController() {
     pageLabel,
     completion,
     audioSrc,
+    sampleBooks,
     timelineOptions,
     selectedTimelineUrl,
     isSwitchingTimeline,
@@ -1399,6 +1489,7 @@ export function useReaderController() {
     switchTimelineSource,
     handleInputChange,
     handleDrop,
+    loadSampleBook,
     openFilePicker,
     toggleDarkMode,
     toggleDebugUnmatchedWords,

@@ -5,32 +5,7 @@ import react from "@vitejs/plugin-react";
 
 const projectRoot = __dirname;
 const parentRoot = path.resolve(projectRoot, "..");
-
-type AutoBootCandidate = {
-  label: string;
-  bookTitle: string;
-  epubPath: string;
-  audioPath: string | null;
-  timelinePath: string | null;
-};
-
-const AUTOBOOT_CANDIDATES: AutoBootCandidate[] = [
-  {
-    label: "audiobook-epub-sync workspace",
-    bookTitle: "The Last Question",
-    epubPath: "audiobook-epub-sync/_OceanofPDF.com_The_Last_Question_-_Isaac_Asimov.epub",
-    audioPath:
-      "audiobook-epub-sync/The Last Question - Isaac Asimov - Read by Leonard Nimoy - Cool Psycho Facts (128k).mp3",
-    timelinePath: "audiobook-epub-sync/book_timeline.json"
-  },
-  {
-    label: "legacy workspace sample",
-    bookTitle: "book",
-    epubPath: "book.epub",
-    audioPath: "asr_0_300s.mp3",
-    timelinePath: "book_timeline.json"
-  }
-];
+const samplesRoot = path.join(projectRoot, "samples");
 
 function toFsUrl(absPath: string): string {
   const normalized = absPath.replace(/\\/g, "/");
@@ -52,50 +27,36 @@ function timelineOptionsForDirectory(absDir: string) {
     }));
 }
 
-function resolveDevAutoBootManifest() {
-  const publicAutoloadDir = path.join(projectRoot, "public", "autoload");
-  const publicEpubPath = path.join(publicAutoloadDir, "book.epub");
-  if (fs.existsSync(publicEpubPath)) {
-    const publicAudioPath = path.join(publicAutoloadDir, "book.mp3");
-    return {
-      label: "audio-ebook-site public autoload",
-      bookTitle: "book",
-      epubUrl: "/autoload/book.epub",
-      audioUrl: fs.existsSync(publicAudioPath) ? "/autoload/book.mp3" : null,
-      timelineUrl: null,
-      timelineOptions: fs
-        .readdirSync(publicAutoloadDir, { withFileTypes: true })
-        .filter((entry) => entry.isFile() && /timeline.*\.json$/i.test(entry.name))
-        .sort((a, b) => a.name.localeCompare(b.name))
-        .map((entry) => ({
-          label: entry.name,
-          timelineUrl: `/autoload/${entry.name}`
-        }))
-    };
+function resolveSampleManifest() {
+  if (!fs.existsSync(samplesRoot)) {
+    return [];
   }
 
-  for (const candidate of AUTOBOOT_CANDIDATES) {
-    const epubAbsPath = path.join(parentRoot, candidate.epubPath);
-    if (!fs.existsSync(epubAbsPath)) {
-      continue;
-    }
+  return fs
+    .readdirSync(samplesRoot, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => {
+      const sampleDir = path.join(samplesRoot, entry.name);
+      const files = fs.readdirSync(sampleDir, { withFileTypes: true }).filter((item) => item.isFile());
+      const epubFile = files.find((item) => item.name.toLowerCase().endsWith(".epub"));
+      const audioFile = files.find((item) => item.name.toLowerCase().endsWith(".mp3"));
+      const timelineOptions = timelineOptionsForDirectory(sampleDir);
 
-    const audioAbsPath = candidate.audioPath ? path.join(parentRoot, candidate.audioPath) : null;
-    const timelineAbsPath = candidate.timelinePath ? path.join(parentRoot, candidate.timelinePath) : null;
-    const timelineDir = path.dirname(timelineAbsPath ?? epubAbsPath);
-    const timelineOptions = timelineOptionsForDirectory(timelineDir);
+      if (!epubFile || !audioFile || timelineOptions.length === 0) {
+        return null;
+      }
 
-    return {
-      label: candidate.label,
-      bookTitle: candidate.bookTitle,
-      epubUrl: toFsUrl(epubAbsPath),
-      audioUrl: audioAbsPath && fs.existsSync(audioAbsPath) ? toFsUrl(audioAbsPath) : null,
-      timelineUrl: timelineOptions[0]?.timelineUrl ?? null,
-      timelineOptions
-    };
-  }
-
-  return null;
+      return {
+        label: entry.name,
+        bookTitle: entry.name,
+        epubUrl: toFsUrl(path.join(sampleDir, epubFile.name)),
+        audioUrl: toFsUrl(path.join(sampleDir, audioFile.name)),
+        timelineUrl: timelineOptions[0]?.timelineUrl ?? null,
+        timelineOptions
+      };
+    })
+    .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry))
+    .sort((a, b) => a.bookTitle.localeCompare(b.bookTitle));
 }
 
 export default defineConfig({
@@ -105,10 +66,10 @@ export default defineConfig({
   plugins: [
     react(),
     {
-      name: "autoload-manifest",
+      name: "sample-manifest",
       configureServer(server) {
-        server.middlewares.use("/__autoload_manifest", (_req, res) => {
-          const payload = resolveDevAutoBootManifest();
+        server.middlewares.use("/__sample_manifest", (_req, res) => {
+          const payload = resolveSampleManifest();
           res.setHeader("Content-Type", "application/json");
           res.end(JSON.stringify(payload));
         });
@@ -117,7 +78,7 @@ export default defineConfig({
   ],
   server: {
     fs: {
-      allow: [parentRoot]
+      allow: [parentRoot, samplesRoot]
     },
     host: "0.0.0.0",
     port: 5173
