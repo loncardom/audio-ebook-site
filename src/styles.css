@@ -444,7 +444,7 @@ svg {
 .reader-titlebar {
   top: 12px;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(220px, 1.6fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 0.9fr) minmax(320px, 2.2fr) minmax(0, 0.9fr);
   align-items: center;
   gap: 14px;
   padding: 8px 10px;
