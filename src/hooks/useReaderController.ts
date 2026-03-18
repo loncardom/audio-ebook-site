@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState, type ChangeEvent, type DragEv
 import ePub, { Book, RelocatedLocation, Rendition } from "epubjs";
 import {
   isEpubFile,
-  resolveAutoBootAssetSet,
   type TimelineOption
 } from "../lib/assets";
 import { debugLog } from "../lib/debug";
@@ -12,6 +11,7 @@ import {
   resolveClickTextPosition,
   wordIndexWithinElement
 } from "../lib/epubDom";
+import { fetchArrayBuffer, fetchTimeline, readFileAsArrayBuffer } from "../lib/readerFiles";
 import { chapterLabel, formatClock, pageNumberLabel } from "../lib/readerFormat";
 import {
   extractHrefFromLocator,
@@ -22,6 +22,8 @@ import {
   timelineLookupKey,
   type TimelineEntry
 } from "../lib/timeline";
+import { useTimelineIndex } from "./useTimelineIndex";
+import { useAutoBootAssets } from "./useAutoBootAssets";
 
 type ReaderStatus = "idle" | "loading" | "ready" | "error";
 type RoutePath = "/" | "/reader";
@@ -35,14 +37,6 @@ type BookMetadata = {
   coverUrl: string | null;
 };
 
-function normalizePathForLookup(path: string | null): string | null {
-  if (!path) {
-    return null;
-  }
-
-  return path.replace(/:nth-of-type\(1\)/g, "");
-}
-
 export function useReaderController() {
   const viewerRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -51,17 +45,10 @@ export function useReaderController() {
   const renditionRef = useRef<Rendition | null>(null);
   const statusRef = useRef<ReaderStatus>("idle");
   const isTurningPageRef = useRef(false);
-  const autoBootAttemptedRef = useRef(false);
   const appActiveRef = useRef(true);
   const activeHighlightElementRef = useRef<HTMLElement | null>(null);
   const followedHrefRef = useRef<string | null>(null);
   const activeWordIndexRef = useRef<number | null>(null);
-  const timelineLookupRef = useRef<Map<string, TimelineEntry>>(new Map());
-  const timelinePathGroupsRef = useRef<Map<string, TimelineEntry[]>>(new Map());
-  const timelinePathCoverageRef = useRef<Map<string, Set<number>>>(new Map());
-  const timelineNormalizedPathGroupsRef = useRef<Map<string, TimelineEntry[]>>(new Map());
-  const timelineNormalizedPathCoverageRef = useRef<Map<string, Set<number>>>(new Map());
-  const timelineHrefGroupsRef = useRef<Map<string, TimelineEntry[]>>(new Map());
   const spreadLayoutRef = useRef(false);
 
   const [routePath, setRoutePath] = useState<RoutePath>(
@@ -104,6 +91,13 @@ export function useReaderController() {
       return false;
     }
   });
+  const {
+    timelineLookupRef,
+    findClosestTimelinePathContext,
+    findNearestEntryForHref,
+    findNearestEntryForLivePath,
+    findNearestEntryForPath
+  } = useTimelineIndex(timelineEntries);
 
   const isDarkMode = themePreference === "system" ? systemPrefersDark : themePreference === "dark";
 
@@ -267,70 +261,6 @@ export function useReaderController() {
       doc.body.style.color = bodyColor;
     }
   }, []);
-
-  async function readFileAsArrayBuffer(file: File): Promise<ArrayBuffer> {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-
-      reader.onload = () => {
-        if (reader.result instanceof ArrayBuffer) {
-          resolve(reader.result);
-          return;
-        }
-        reject(new Error("The selected file could not be read as binary data."));
-      };
-
-      reader.onerror = () => {
-        reject(reader.error ?? new Error("The selected file could not be read."));
-      };
-
-      reader.readAsArrayBuffer(file);
-    });
-  }
-
-  async function fetchArrayBuffer(url: string): Promise<ArrayBuffer> {
-    debugLog("fetchArrayBuffer:start", { url });
-    const response = await fetch(url);
-    debugLog("fetchArrayBuffer:response", { url, ok: response.ok, status: response.status });
-    if (!response.ok) {
-      throw new Error(`Failed to load ${url}`);
-    }
-
-    const data = await response.arrayBuffer();
-    debugLog("fetchArrayBuffer:done", { url, bytes: data.byteLength });
-    return data;
-  }
-
-  async function fetchTimeline(url: string): Promise<TimelineEntry[]> {
-    debugLog("fetchTimeline:start", { url });
-    const response = await fetch(url);
-    debugLog("fetchTimeline:response", { url, ok: response.ok, status: response.status });
-    if (!response.ok) {
-      throw new Error(`Failed to load ${url}`);
-    }
-
-    const payload = (await response.json()) as unknown;
-    if (!Array.isArray(payload)) {
-      debugLog("fetchTimeline:invalid-shape", {
-        url,
-        payloadType: payload === null ? "null" : typeof payload
-      });
-      return [];
-    }
-
-    const filtered = payload.filter(
-      (entry): entry is TimelineEntry => {
-        if (typeof entry !== "object" || entry === null) {
-          return false;
-        }
-
-        const candidate = entry as Partial<TimelineEntry>;
-        return typeof candidate.cfi === "string" && candidate.cfi.length > 0;
-      }
-    );
-    debugLog("fetchTimeline:done", { url, total: payload.length, usable: filtered.length });
-    return filtered;
-  }
 
   async function switchTimelineSource(nextTimelineUrl: string) {
     if (!nextTimelineUrl || nextTimelineUrl === selectedTimelineUrl) {
@@ -616,78 +546,6 @@ export function useReaderController() {
   }
 
   useEffect(() => {
-    const nextLookup = new Map<string, TimelineEntry>();
-    const nextPathGroups = new Map<string, TimelineEntry[]>();
-    const nextPathCoverage = new Map<string, Set<number>>();
-    const nextNormalizedPathGroups = new Map<string, TimelineEntry[]>();
-    const nextNormalizedPathCoverage = new Map<string, Set<number>>();
-    const nextHrefGroups = new Map<string, TimelineEntry[]>();
-
-    for (const entry of timelineEntries) {
-      const parsed = parseTimelineRef(entry.cfi);
-      nextLookup.set(timelineLookupKey(parsed.href, parsed.path, parsed.wordIndex), entry);
-
-      const pathKey = timelineLookupKey(parsed.href, parsed.path, null);
-      const pathEntries = nextPathGroups.get(pathKey) ?? [];
-      pathEntries.push(entry);
-      nextPathGroups.set(pathKey, pathEntries);
-
-      const normalizedPathKey = timelineLookupKey(
-        parsed.href,
-        normalizePathForLookup(parsed.path),
-        null
-      );
-      const normalizedPathEntries = nextNormalizedPathGroups.get(normalizedPathKey) ?? [];
-      normalizedPathEntries.push(entry);
-      nextNormalizedPathGroups.set(normalizedPathKey, normalizedPathEntries);
-
-      if (parsed.wordIndex !== null) {
-        const pathCoverage = nextPathCoverage.get(pathKey) ?? new Set<number>();
-        pathCoverage.add(parsed.wordIndex);
-        nextPathCoverage.set(pathKey, pathCoverage);
-
-        const normalizedPathCoverage =
-          nextNormalizedPathCoverage.get(normalizedPathKey) ?? new Set<number>();
-        normalizedPathCoverage.add(parsed.wordIndex);
-        nextNormalizedPathCoverage.set(normalizedPathKey, normalizedPathCoverage);
-      }
-
-      if (parsed.href) {
-        const hrefEntries = nextHrefGroups.get(parsed.href) ?? [];
-        hrefEntries.push(entry);
-        nextHrefGroups.set(parsed.href, hrefEntries);
-      }
-    }
-
-    for (const entries of nextPathGroups.values()) {
-      entries.sort((a, b) => {
-        const parsedA = parseTimelineRef(a.cfi);
-        const parsedB = parseTimelineRef(b.cfi);
-        return (parsedA.wordIndex ?? 0) - (parsedB.wordIndex ?? 0);
-      });
-    }
-
-    for (const entries of nextHrefGroups.values()) {
-      entries.sort((a, b) => a.start - b.start);
-    }
-
-    for (const entries of nextNormalizedPathGroups.values()) {
-      entries.sort((a, b) => {
-        const parsedA = parseTimelineRef(a.cfi);
-        const parsedB = parseTimelineRef(b.cfi);
-        return (parsedA.wordIndex ?? 0) - (parsedB.wordIndex ?? 0);
-      });
-    }
-
-    timelineLookupRef.current = nextLookup;
-    timelinePathGroupsRef.current = nextPathGroups;
-    timelinePathCoverageRef.current = nextPathCoverage;
-    timelineNormalizedPathGroupsRef.current = nextNormalizedPathGroups;
-    timelineNormalizedPathCoverageRef.current = nextNormalizedPathCoverage;
-    timelineHrefGroupsRef.current = nextHrefGroups;
-  }, [timelineEntries]);
-
-  useEffect(() => {
     try {
       window.localStorage.setItem(
         DEBUG_UNMATCHED_WORDS_KEY,
@@ -765,67 +623,36 @@ export function useReaderController() {
     applyReaderTheme(isDarkMode);
   }, [applyReaderTheme, isDarkMode, renderVersion]);
 
-  useEffect(() => {
-    if (autoBootAttemptedRef.current || !import.meta.env.DEV) {
-      return;
+  useAutoBootAssets({
+    enabled: import.meta.env.DEV,
+    appActiveRef,
+    onStart: (bookTitle) => {
+      setLandingNotice("");
+      setStatus("loading");
+      setBookTitle(bookTitle);
+      setShowReaderUi(true);
+      navigate("/reader");
+    },
+    onNoAssets: () => undefined,
+    onReady: ({ bookTitle, bookData, audioUrl, timelineEntries, timelineOptions, selectedTimelineUrl }) => {
+      setTimelineEntries(timelineEntries);
+      setTimelineOptions(timelineOptions);
+      setSelectedTimelineUrl(selectedTimelineUrl);
+      setAudioSrc(audioUrl);
+      if (!viewerRef.current) {
+        debugLog("autoboot:no-viewer");
+        throw new Error("Reader viewport was not mounted.");
+      }
+      void loadBookFromBinary(bookData, `${bookTitle}.epub`);
+    },
+    onError: () => {
+      setStatus("idle");
+      setLandingNotice(
+        "Automatic sample loading was unavailable. You can still upload an EPUB manually."
+      );
+      navigate("/");
     }
-
-    autoBootAttemptedRef.current = true;
-    void resolveAutoBootAssetSet()
-      .then(async (assets) => {
-        if (!assets) {
-          debugLog("autoboot:no-assets");
-          return;
-        }
-
-        debugLog("autoboot:start", assets);
-        setLandingNotice("");
-        setStatus("loading");
-        setBookTitle(assets.bookTitle);
-        setShowReaderUi(true);
-        navigate("/reader");
-
-        const initialTimelineUrl = assets.timelineOptions[0]?.timelineUrl ?? assets.timelineUrl;
-
-        const [bookData, timeline] = await Promise.all([
-          fetchArrayBuffer(assets.epubUrl),
-          initialTimelineUrl ? fetchTimeline(initialTimelineUrl) : Promise.resolve([])
-        ]);
-
-        if (!appActiveRef.current) {
-          debugLog("autoboot:ignored-inactive");
-          return;
-        }
-
-        debugLog("autoboot:assets-ready", {
-          bookBytes: bookData.byteLength,
-          timelineEntries: timeline.length,
-          audioUrl: assets.audioUrl
-        });
-        setTimelineEntries(timeline);
-        setTimelineOptions(assets.timelineOptions);
-        setSelectedTimelineUrl(initialTimelineUrl);
-        setAudioSrc(assets.audioUrl);
-        if (!viewerRef.current) {
-          debugLog("autoboot:no-viewer");
-          throw new Error("Reader viewport was not mounted.");
-        }
-        void loadBookFromBinary(bookData, `${assets.bookTitle}.epub`);
-      })
-      .catch((error) => {
-        if (!appActiveRef.current) {
-          debugLog("autoboot:error-ignored-inactive", error);
-          return;
-        }
-
-        debugLog("autoboot:failed", error);
-        setStatus("idle");
-        setLandingNotice(
-          "Automatic sample loading was unavailable. You can still upload an EPUB manually."
-        );
-        navigate("/");
-      });
-  }, []);
+  });
 
   useEffect(() => {
     if (routePath !== "/reader" || !pendingFile || !viewerMounted) {
@@ -1314,212 +1141,6 @@ export function useReaderController() {
     }
 
     void renditionRef.current.display(activeHref).catch(() => undefined);
-  }
-
-  function findNearestEntryForPath(
-    href: string | null,
-    path: string,
-    wordIndex: number | null
-  ): TimelineEntry | null {
-    if (!href) {
-      return null;
-    }
-
-    const entries = timelinePathGroupsRef.current.get(
-      timelineLookupKey(href, path, null)
-    );
-
-    if (!entries?.length) {
-      return null;
-    }
-
-    if (wordIndex === null) {
-      return entries[0];
-    }
-
-    let best = entries[0];
-    let bestDistance = Math.abs((parseTimelineRef(best.cfi).wordIndex ?? 0) - wordIndex);
-
-    for (const entry of entries) {
-      const candidateIndex = parseTimelineRef(entry.cfi).wordIndex ?? 0;
-      const distance = Math.abs(candidateIndex - wordIndex);
-      if (distance < bestDistance) {
-        best = entry;
-        bestDistance = distance;
-      }
-    }
-
-    return best;
-  }
-
-  function findNearestEntryForNormalizedPath(
-    href: string | null,
-    normalizedPath: string,
-    wordIndex: number | null
-  ): TimelineEntry | null {
-    if (!href) {
-      return null;
-    }
-
-    const entries = timelineNormalizedPathGroupsRef.current.get(
-      timelineLookupKey(href, normalizedPath, null)
-    );
-
-    if (!entries?.length) {
-      return null;
-    }
-
-    if (wordIndex === null) {
-      return entries[0];
-    }
-
-    let best = entries[0];
-    let bestDistance = Math.abs((parseTimelineRef(best.cfi).wordIndex ?? 0) - wordIndex);
-
-    for (const entry of entries) {
-      const candidateIndex = parseTimelineRef(entry.cfi).wordIndex ?? 0;
-      const distance = Math.abs(candidateIndex - wordIndex);
-      if (distance < bestDistance) {
-        best = entry;
-        bestDistance = distance;
-      }
-    }
-
-    return best;
-  }
-
-  function scorePathSuffixSimilarity(livePath: string, exportedPath: string): number {
-    const liveSegments = livePath.split(" > ");
-    const exportedSegments = exportedPath.split(" > ");
-    let score = 0;
-    let liveIndex = liveSegments.length - 1;
-    let exportedIndex = exportedSegments.length - 1;
-
-    while (liveIndex >= 0 && exportedIndex >= 0) {
-      if (liveSegments[liveIndex] === exportedSegments[exportedIndex]) {
-        score += 4;
-        liveIndex -= 1;
-        exportedIndex -= 1;
-        continue;
-      }
-
-      const liveTag = liveSegments[liveIndex].split(":")[0];
-      const exportedTag = exportedSegments[exportedIndex].split(":")[0];
-      if (liveTag === exportedTag) {
-        score += 1;
-      }
-      break;
-    }
-
-    return score;
-  }
-
-  function findNearestEntryForLivePath(
-    href: string | null,
-    livePath: string,
-    wordIndex: number | null
-  ): { entry: TimelineEntry; path: string; score: number } | null {
-    if (!href) {
-      return null;
-    }
-
-    let bestMatch: { entry: TimelineEntry; path: string; score: number } | null = null;
-    let bestDistance = Number.POSITIVE_INFINITY;
-
-    for (const [key, entries] of timelinePathGroupsRef.current.entries()) {
-      if (!entries.length) {
-        continue;
-      }
-
-      const parsed = parseTimelineRef(entries[0].cfi);
-      if (parsed.href !== href || !parsed.path) {
-        continue;
-      }
-
-      const score = scorePathSuffixSimilarity(livePath, parsed.path);
-      if (score <= 0) {
-        continue;
-      }
-
-      const entry = findNearestEntryForPath(href, parsed.path, wordIndex);
-      if (!entry) {
-        continue;
-      }
-
-      const candidateIndex = parseTimelineRef(entry.cfi).wordIndex ?? 0;
-      const distance = wordIndex === null ? 0 : Math.abs(candidateIndex - wordIndex);
-
-      if (
-        !bestMatch ||
-        score > bestMatch.score ||
-        (score === bestMatch.score && distance < bestDistance)
-      ) {
-        bestMatch = {
-          entry,
-          path: parsed.path,
-          score
-        };
-        bestDistance = distance;
-      }
-    }
-
-    return bestMatch;
-  }
-
-  function findNearestEntryForHref(href: string | null): TimelineEntry | null {
-    if (!href) {
-      return null;
-    }
-
-    const entries = timelineHrefGroupsRef.current.get(href);
-    return entries?.[0] ?? null;
-  }
-
-  function findClosestTimelinePathContext(
-    href: string | null,
-    element: Element | null,
-    doc: Document
-  ): { element: Element; path: string; coverage: Set<number> } | null {
-    let currentElement = element;
-
-    while (currentElement && currentElement !== doc.body.parentElement) {
-      const candidatePath = buildElementPath(currentElement, doc);
-      const candidateCoverage = timelinePathCoverageRef.current.get(
-        timelineLookupKey(href, candidatePath, null)
-      );
-
-      if (candidateCoverage?.size) {
-        return {
-          element: currentElement,
-          path: candidatePath,
-          coverage: candidateCoverage
-        };
-      }
-
-      const normalizedCandidatePath = normalizePathForLookup(candidatePath);
-      const normalizedCoverage = timelineNormalizedPathCoverageRef.current.get(
-        timelineLookupKey(href, normalizedCandidatePath, null)
-      );
-      const normalizedEntry =
-        normalizedCandidatePath !== candidatePath
-          ? findNearestEntryForNormalizedPath(href, normalizedCandidatePath ?? "", null)
-          : null;
-
-      if (normalizedCoverage?.size && normalizedEntry) {
-        const exportedPath = parseTimelineRef(normalizedEntry.cfi).path;
-        if (exportedPath) {
-          return {
-            element: currentElement,
-            path: exportedPath,
-            coverage: normalizedCoverage
-          };
-        }
-      }
-
-      currentElement = currentElement.parentElement;
-    }
-
-    return null;
   }
 
   useEffect(() => {
